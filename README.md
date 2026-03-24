@@ -18,9 +18,8 @@ EXE just runs it as an HTTP server (optionally with a cloudflare tunnel) so you 
 2) Download the latest mcpb file from the releases page
 3) Run the launcher, go to Settings > Extensions > Advanced Settings > Install Extension > Install the file you downloaded
 4) If a setup window pops up, great, follow it. If it doesn't, restart the client.
-5) If after restarting the client two setup windows pop up, close one
-6) Follow the setup, pick which models you want to download, etc.
-7) If you chose to install Flux Klein, you will need to install Comfy-GGUF in ComfyUI. The model will guide you through the steps as soon as you try to use it and it fails.
-8) If anything fails (especially after installing GGUF) restart Claude/ComfyUI/your computer. It's all kind of unreliable.
-9) If you don't install a model pack but try to use it, it will download it.
-10) If you want to use a custom workflow, or to change which artists the model can choose from, you can go to Settings > Extensions > Configure for comfyui-image-gen. And set it there.
+5) Follow the setup, pick which models you want to download, etc.
+6) If you chose to install Flux Klein, you will need to install Comfy-GGUF in ComfyUI. The model will guide you through the steps as soon as you try to use it and it fails.
+7) If anything fails (especially after installing GGUF) restart Claude/ComfyUI/your computer. It's all kind of unreliable.
+8) If you don't install a model pack but try to use it, it will download it.
+9) If you want to use a custom workflow, or to change which artists the model can choose from, you can go to Settings > Extensions > Configure for comfyui-image-gen. And set it there.

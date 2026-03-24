@@ -4,3 +4,4 @@ comfyui-image-gen/.idea/*
 venv/*
 dist/*
 comfyui-image-gen/server/__pycache__/*
+comfyui-image-gen-mcp.spec

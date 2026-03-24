@@ -16,6 +16,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 
 # Ensure the extension root is on sys.path so `from server.xxx` imports work
 # whether this file is run as a script (uv), as a module, or as a frozen exe.
@@ -38,7 +39,7 @@ from server.comfyui import (
     find_models_dir,
     launch_comfyui,
 )
-from server.config import COMFYUI_DEFAULT_URL, JPEG_QUALITY, MAX_IMAGE_SIZE, MODEL_PACKS_DIR
+from server.config import COMFYUI_DEFAULT_URL, JPEG_QUALITY, MAX_IMAGE_SIZE, MODEL_PACKS_DIR, _EXT_DIR
 from server.model_pack import check_models_present, load_all_packs
 from server.workflow import build_prompt, load_custom_workflow
 
@@ -91,10 +92,40 @@ def _get_python_and_cwd() -> tuple[str, str]:
         return sys.executable, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+_SETUP_LOCKFILE = os.path.join(_EXT_DIR, ".setup_running.lock")
+
+
+def _is_setup_locked() -> bool:
+    """Check if another instance is already running the setup UI."""
+    if os.path.isfile(_SETUP_LOCKFILE):
+        # Stale lockfile check: if older than 30 minutes, ignore it
+        try:
+            age = time.time() - os.path.getmtime(_SETUP_LOCKFILE)
+            if age > 300:
+                log.warning("Stale setup lockfile (%.0fs old), removing", age)
+                os.remove(_SETUP_LOCKFILE)
+                return False
+        except OSError:
+            pass
+        log.info("Setup lockfile exists — another instance is handling setup")
+        return True
+    return False
+
+
 def _launch_setup_background(*setup_args: str):
     """Launch a setup_ui subprocess in a background thread (non-blocking)."""
     global setup_running
+
+    if _is_setup_locked():
+        return
+
     setup_running = True
+    # Create lockfile
+    try:
+        with open(_SETUP_LOCKFILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
 
     def _run():
         global setup_running, comfyui_exe, models_dir
@@ -115,6 +146,10 @@ def _launch_setup_background(*setup_args: str):
             log.error("Setup UI failed: %s", e)
         finally:
             setup_running = False
+            try:
+                os.remove(_SETUP_LOCKFILE)
+            except OSError:
+                pass
             log.info("Background setup finished.")
 
     t = threading.Thread(target=_run, daemon=True)
