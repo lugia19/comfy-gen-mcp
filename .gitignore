@@ -1,0 +1,6 @@
+build/*
+.claude/*
+comfyui-image-gen/.idea/*
+venv/*
+dist/*
+comfyui-image-gen/server/__pycache__/*

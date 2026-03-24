@@ -1,0 +1,73 @@
+{
+  "dxt_version": "0.4",
+  "name": "comfyui-image-gen",
+  "display_name": "ComfyUI Image Generator",
+  "version": "1.0.0",
+  "description": "Generate images using AI models via a local ComfyUI instance. Automatically handles model setup. After first install, please restart Claude Desktop.",
+  "author": {
+    "name": "lugia19"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "${__dirname}/server/main.py"],
+      "env": {
+        "COMFYUI_URL": "${user_config.comfyui_url}",
+        "COMFYUI_EXE": "${user_config.comfyui_exe}",
+        "CUSTOM_WORKFLOW": "${user_config.custom_workflow}",
+        "ANIMA_ARTISTS": "${user_config.anima_artists}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "generate_illustrated_image",
+      "description": "Generate an anime/illustration image using the Anima model via ComfyUI"
+    },
+    {
+      "name": "generate_realistic_image",
+      "description": "Generate a realistic/general-purpose image using the Flux 2 Klein model via ComfyUI"
+    },
+    {
+      "name": "generate_custom_image",
+      "description": "Generate an image using a user-provided custom ComfyUI workflow"
+    }
+  ],
+  "user_config": {
+    "anima_artists": {
+      "type": "string",
+      "title": "Anima Artist Styles",
+      "description": "Comma-separated list of artist styles for the Anima model. The model defaults to the first one. Uses @ prefix (e.g. @cutesexyrobutts, @nyantcha).",
+      "default": "@cutesexyrobutts, @nyantcha, @bone nigi",
+      "required": false
+    },
+    "comfyui_url": {
+      "type": "string",
+      "title": "ComfyUI URL",
+      "description": "URL of your ComfyUI instance (leave default unless you have a custom setup)",
+      "default": "http://127.0.0.1:8000",
+      "required": false
+    },
+    "comfyui_exe": {
+      "type": "string",
+      "title": "ComfyUI Executable Path (optional)",
+      "description": "Path to your ComfyUI executable if installed in a non-default location. Leave empty for auto-detection.",
+      "required": false
+    },
+    "custom_workflow": {
+      "type": "string",
+      "title": "Custom Workflow Path (optional)",
+      "description": "Path to a ComfyUI workflow exported in API format (.json). If provided, this replaces the built-in workflow.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}
