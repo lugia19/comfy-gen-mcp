@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-comfyui-image-gen\venv\Scripts\pip install pyinstaller httpx mcp Pillow
+comfyui-image-gen\venv\Scripts\pip install pyinstaller httpx mcp Pillow websocket-client
 comfyui-image-gen\venv\Scripts\pyinstaller --onefile --name comfyui-image-gen-mcp ^
     --add-data "comfyui-image-gen\model_packs;model_packs" ^
     --paths "comfyui-image-gen" ^
@@ -29,6 +29,8 @@ comfyui-image-gen\venv\Scripts\pyinstaller --onefile --name comfyui-image-gen-mc
     --hidden-import server.workflow ^
     --hidden-import server.tunnel ^
     --hidden-import server.setup_ui ^
+    --hidden-import server.comfy_job ^
+    --hidden-import websocket ^
     --exclude-module mcp.cli ^
     comfyui-image-gen\server\main.py
 echo.

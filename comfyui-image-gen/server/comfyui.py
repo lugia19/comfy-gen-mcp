@@ -71,24 +71,9 @@ def find_models_dir() -> str | None:
     else:
         log.info("ComfyUI config file not found")
 
-    # Fallback: derive from default install paths
-    if platform.system() == "Windows":
-        fallback = os.path.join(
-            os.environ.get("LOCALAPPDATA", ""),
-            "Programs", "@comfyorgcomfyui-electron",
-            "resources", "ComfyUI", "models",
-        )
-    elif platform.system() == "Darwin":
-        fallback = "/Applications/ComfyUI.app/Contents/Resources/ComfyUI/models"
-    else:
-        log.info("Unsupported platform for fallback models dir detection")
-        return None
-
-    log.info("Checking fallback models dir: %s", fallback)
-    if os.path.isdir(fallback):
-        log.info("Fallback models dir found: %s", fallback)
-        return fallback
-    log.info("Fallback models dir does not exist")
+    # No config.json found — we can't reliably guess the models path.
+    # The user needs to run ComfyUI Desktop at least once so it creates its config.
+    log.info("No ComfyUI config found — cannot determine models directory. Please run ComfyUI Desktop at least once.")
     return None
 
 

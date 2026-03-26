@@ -6,4 +6,5 @@ dependencies = [
     "Pillow>=10.0",
     "mcp>=1.0",
     "httpx>=0.27",
+    "websocket-client>=1.0",
 ]

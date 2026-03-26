@@ -34,6 +34,10 @@
     {
       "name": "generate_custom_image",
       "description": "Generate an image using a user-provided custom ComfyUI workflow"
+    },
+    {
+      "name": "fetch_result",
+      "description": "Fetch the result of an image generation that is still in progress"
     }
   ],
   "user_config": {

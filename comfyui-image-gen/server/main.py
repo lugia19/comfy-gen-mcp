@@ -7,9 +7,6 @@ Supports two modes:
 """
 
 import argparse
-import asyncio
-import base64
-import io
 import logging
 import os
 import secrets
@@ -27,10 +24,8 @@ else:
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 
-import httpx
 from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, ImageContent, TextContent
-from PIL import Image
+from mcp.types import CallToolResult, TextContent
 
 from server.comfyui import (
     check_required_nodes,
@@ -39,9 +34,10 @@ from server.comfyui import (
     find_models_dir,
     launch_comfyui,
 )
-from server.config import COMFYUI_DEFAULT_URL, JPEG_QUALITY, MAX_IMAGE_SIZE, MODEL_PACKS_DIR, _EXT_DIR
+from server.config import COMFYUI_DEFAULT_URL, MODEL_PACKS_DIR, _EXT_DIR
+from server.comfy_job import ComfyJob, wait_for_job
 from server.model_pack import check_models_present, load_all_packs
-from server.workflow import build_prompt, load_custom_workflow
+from server.workflow import load_custom_workflow
 
 log = logging.getLogger("comfy-mcp")
 # CRITICAL: logs must go to stderr — stdout is the MCP stdio transport channel.
@@ -76,6 +72,9 @@ models_dir: str | None = None
 # Per-pack download state: pack_name → True if download in progress
 _downloading: dict[str, bool] = {}
 setup_running: bool = False  # True while first-run or ComfyUI setup is in progress
+
+# ── Job queue ─────────────────────────────────────────────────────────
+_jobs: dict[str, ComfyJob] = {}
 
 
 
@@ -156,23 +155,32 @@ def _launch_setup_background(*setup_args: str):
     t.start()
 
 
-def _launch_download_ui(pack: dict):
-    """Launch the download UI as a subprocess for a model pack (blocking)."""
-    pack_path = pack.get("_source_path")
-    if not pack_path:
-        log.error("No source path for pack %s, cannot launch download UI", pack["name"])
-        return
+_http_mode_flag = False  # set in main() before tools are called
 
-    python, cwd = _get_python_and_cwd()
-    args = [python, "-m", "server.setup_ui", "--download", models_dir or "", pack_path]
-    try:
-        log.info("Download UI command: %s (cwd=%s)", args, cwd)
-        # On-demand download: runs after mcp.run() has taken over stdin/stdout.
-        # Must use DEVNULL to avoid inheriting MCP pipes (which blocks the subprocess).
-        # (The first-run setup path doesn't need this — see _launch_setup_background.)
-        subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-    except Exception as e:
-        log.error("Failed to launch download UI: %s", e)
+
+def _launch_download_ui(pack: dict):
+    """Launch the download UI for a model pack (blocking)."""
+    title = f"Downloading {pack.get('display_name', 'model')} files..."
+    pack_models = pack.get("models", [])
+
+    if _http_mode_flag:
+        # HTTP mode: run in-process (no pipe issues, works on macOS too)
+        from server.setup_ui import run_download_ui
+        log.info("Running download UI in-process for %s", pack["name"])
+        run_download_ui(models_dir or "", pack_models, title)
+    else:
+        # DXT/stdio mode: must subprocess to avoid MCP pipe issues
+        pack_path = pack.get("_source_path")
+        if not pack_path:
+            log.error("No source path for pack %s, cannot launch download UI", pack["name"])
+            return
+        python, cwd = _get_python_and_cwd()
+        args = [python, "-m", "server.setup_ui", "--download", models_dir or "", pack_path]
+        try:
+            log.info("Download UI command: %s (cwd=%s)", args, cwd)
+            subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        except Exception as e:
+            log.error("Failed to launch download UI: %s", e)
 
 
 def _download_in_background(pack: dict):
@@ -194,59 +202,6 @@ def _download_in_background(pack: dict):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
-
-async def _generate_via_comfyui(prompt_text: str, pack: dict, aspect_ratio: str = "square") -> bytes:
-    """Submit a workflow to ComfyUI and return the output image bytes."""
-    wf = build_prompt(
-        pack["workflow"],
-        prompt_text,
-        pack["prompt_node_id"],
-        pack["seed_nodes"],
-        dimension_nodes=pack.get("dimension_nodes"),
-        aspect_ratio=aspect_ratio,
-        max_pixels=pack.get("max_pixels", 1_048_576),
-    )
-
-    async with httpx.AsyncClient(timeout=300) as client:
-        log.info("POSTing prompt to %s/prompt", comfyui_url)
-        resp = await client.post(f"{comfyui_url}/prompt", json={"prompt": wf})
-        if resp.status_code != 200:
-            body = resp.text[:1000]
-            log.error("ComfyUI /prompt returned %d: %s", resp.status_code, body)
-            raise RuntimeError(f"ComfyUI rejected the workflow (HTTP {resp.status_code}): {body}")
-        pid = resp.json()["prompt_id"]
-        log.info("Prompt queued, prompt_id=%s", pid)
-
-        poll_count = 0
-        while True:
-            resp = await client.get(f"{comfyui_url}/history/{pid}")
-            history = resp.json()
-            if pid in history:
-                entry = history[pid]
-                # Check for execution errors
-                if entry.get("status", {}).get("status_str") == "error":
-                    err_msgs = entry.get("status", {}).get("messages", [])
-                    log.error("ComfyUI execution error for %s: %s", pid, err_msgs)
-                    raise RuntimeError(f"ComfyUI execution failed: {err_msgs}")
-
-                log.info("Prompt %s completed after %d polls", pid, poll_count)
-                for node_output in entry.get("outputs", {}).values():
-                    if "images" in node_output:
-                        img = node_output["images"][0]
-                        log.info("Fetching image: %s", img["filename"])
-                        img_resp = await client.get(
-                            f"{comfyui_url}/view",
-                            params={
-                                "filename": img["filename"],
-                                "subfolder": img.get("subfolder", ""),
-                                "type": img.get("type", "output"),
-                            },
-                        )
-                        return img_resp.content
-            poll_count += 1
-            if poll_count % 10 == 0:
-                log.info("Still waiting for prompt %s... (poll #%d)", pid, poll_count)
-            await asyncio.sleep(1)
 
 
 def startup(http_mode: bool = False) -> tuple[list[dict], dict | None]:
@@ -286,6 +241,10 @@ def startup(http_mode: bool = False) -> tuple[list[dict], dict | None]:
             run_first_time_setup(models_dir or "", packs, need_comfyui, in_process=True)
             comfyui_exe = find_comfyui_install()
             models_dir = find_models_dir()
+            if comfyui_exe is None:
+                log.error("ComfyUI still not found after setup. Exiting.")
+                print("ComfyUI is required. Please install it and try again.")
+                sys.exit(1)
         else:
             log.info("First run detected — launching setup wizard in background...")
             _launch_setup_background("--first-run", models_dir or "", MODEL_PACKS_DIR)
@@ -296,6 +255,10 @@ def startup(http_mode: bool = False) -> tuple[list[dict], dict | None]:
             run_comfyui_setup(in_process=True)
             comfyui_exe = find_comfyui_install()
             models_dir = find_models_dir()
+            if comfyui_exe is None:
+                log.error("ComfyUI still not found after setup. Exiting.")
+                print("ComfyUI is required. Please install it and try again.")
+                sys.exit(1)
         else:
             log.info("ComfyUI not found — launching detection UI in background...")
             _launch_setup_background("--comfyui")
@@ -357,6 +320,23 @@ def startup(http_mode: bool = False) -> tuple[list[dict], dict | None]:
 
 
 def main():
+    # macOS .app relaunch: if no terminal, reopen in Terminal.app
+    import platform
+    if platform.system() == "Darwin" and not os.environ.get("TERM"):
+        executable = os.path.abspath(sys.argv[0]) if getattr(sys, "frozen", False) else os.path.abspath(sys.executable)
+        exe_dir = os.path.dirname(executable)
+        # Escape single quotes for AppleScript
+        exe_dir_esc = exe_dir.replace("'", "'\\''")
+        executable_esc = executable.replace("'", "'\\''")
+        script = (
+            f'tell application "Terminal"\n'
+            f"    set newTab to do script \"cd '{exe_dir_esc}' && '{executable_esc}' && exit\"\n"
+            f'    activate\n'
+            f'end tell'
+        )
+        subprocess.Popen(["osascript", "-e", script])
+        sys.exit(0)
+
     # Frozen exe is always HTTP mode; script mode uses argparse.
     if getattr(sys, "frozen", False):
         class _Args:
@@ -371,7 +351,9 @@ def main():
         parser.add_argument("-t", "--tunnel", nargs="?", const="temp", help="Start a cloudflare tunnel (HTTP mode only)")
         args = parser.parse_args()
 
+    global _http_mode_flag
     http_mode = args.http
+    _http_mode_flag = http_mode
 
     # In HTTP mode, inject settings from local_config.json into env vars
     # so startup()'s _env() reads them identically to DXT mode.
@@ -455,25 +437,31 @@ def main():
                     content=[TextContent(type="text", text="ComfyUI is not running. Please start ComfyUI Desktop.")]
                 )
 
-        try:
-            img_bytes = await _generate_via_comfyui(prompt, custom_pack, aspect_ratio)
-        except Exception as e:
-            log.exception("Custom workflow generation failed")
-            return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
+        # Start generation as a background job and wait with timeout
+        ComfyJob.cleanup_old(_jobs)
+        job = ComfyJob(prompt, custom_pack, aspect_ratio, comfyui_url)
+        job.start()
+        _jobs[job.token] = job
+        return await wait_for_job(job)
 
-        img = Image.open(io.BytesIO(img_bytes))
-        if max(img.size) > MAX_IMAGE_SIZE:
-            img.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
-        b64 = base64.b64encode(buf.getvalue()).decode()
+    # Register fetch_result tool for retrieving async generation results
+    @mcp.tool(
+        name="fetch_result",
+        description=(
+            "Fetch the result of an image generation that is still in progress. "
+            "Use this when a generation tool returns a request_token instead of an image."
+        ),
+    )
+    async def fetch_result(request_token: str) -> CallToolResult:
+        log.info("fetch_result called, token=%s", request_token)
+        if request_token not in _jobs:
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Unknown or expired request token: {request_token}")]
+            )
+        return await wait_for_job(_jobs[request_token])
 
-        return CallToolResult(
-            content=[ImageContent(type="image", data=b64, mimeType="image/jpeg")]
-        )
-
-    total_tools = len(packs) + 1  # packs + custom
-    log.info("Starting MCP server (stdio transport), %d tool(s)...", total_tools)
+    total_tools = len(packs) + 2  # packs + custom + fetch_result
+    log.info("Starting MCP server, %d tool(s)...", total_tools)
 
     # Register one tool per model pack
     def _make_handler(pack: dict):
@@ -495,8 +483,19 @@ def main():
                     ))]
                 )
 
+            # Check if we can find the models directory
+            if not models_dir:
+                log.warning("No models directory found — ComfyUI may not have been run yet")
+                return CallToolResult(
+                    content=[TextContent(type="text", text=(
+                        "Cannot find ComfyUI's models directory. "
+                        "Please open ComfyUI Desktop and complete its initial setup first, then try again. "
+                        "ComfyUI needs to run at least once to create its configuration."
+                    ))]
+                )
+
             # Check if this pack's models are downloaded
-            if models_dir and not check_models_present(models_dir, pack):
+            if not check_models_present(models_dir, pack):
                 pack_name = pack["display_name"]
                 if _downloading.get(pack["name"]):
                     log.info("Download already in progress for %s", pack_name)
@@ -555,43 +554,12 @@ def main():
                         ))]
                     )
 
-            # Generate
-            try:
-                log.info("Submitting workflow to ComfyUI...")
-                img_bytes = await _generate_via_comfyui(prompt, pack, aspect_ratio)
-                log.info("Generation complete, received %d bytes", len(img_bytes))
-            except httpx.ConnectError:
-                log.error("Connection to ComfyUI failed at %s", comfyui_url)
-                return CallToolResult(
-                    content=[TextContent(type="text", text="Error: ComfyUI is not running or not reachable.")]
-                )
-            except Exception as e:
-                log.exception("Generation failed")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=(
-                        f"Error: {e}\n\n"
-                        "If this error persists, try closing ComfyUI from the system tray and retrying. "
-                        "If that doesn't help, restarting your PC can clear ghost ComfyUI instances."
-                    ))]
-                )
-
-            # Process image
-            img = Image.open(io.BytesIO(img_bytes))
-            log.info("Raw image size: %dx%d", img.size[0], img.size[1])
-            if max(img.size) > MAX_IMAGE_SIZE:
-                img.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), Image.LANCZOS)
-                log.info("Resized to: %dx%d", img.size[0], img.size[1])
-
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            log.info("JPEG encoded, %d bytes base64", len(b64))
-
-            return CallToolResult(
-                content=[
-                    ImageContent(type="image", data=b64, mimeType="image/jpeg"),
-                ]
-            )
+            # Start generation as a background job and wait with timeout
+            ComfyJob.cleanup_old(_jobs)
+            job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
+            job.start()
+            _jobs[job.token] = job
+            return await wait_for_job(job)
         return handler
 
     for pack in packs:
@@ -610,32 +578,43 @@ def main():
         if not use_tunnel and "use_tunnel" in local_cfg:
             use_tunnel = local_cfg["use_tunnel"]
         elif not use_tunnel and args.tunnel is None:
-            # Interactive prompt (first run or no saved preference)
-            print("\nHow do you want to expose the server?")
-            print("  1. Cloudflare tunnel (easiest, URL changes on restart)")
-            print("  2. I already have my own domain / reverse proxy")
-            choice = input("Select [1]: ").strip() or "1"
-            use_tunnel = choice == "1"
-            remember = input("Remember this choice? [y/N]: ").strip().lower()
-            if remember == "y":
-                local_cfg["use_tunnel"] = use_tunnel
-                save_local_config(local_cfg)
-                print("Saved.")
+            from server.tunnel import show_tunnel_choice
+            use_tunnel = show_tunnel_choice(local_cfg, save_local_config)
 
         if use_tunnel:
             try:
                 tunnel_proc, tunnel_url = start_cloudflare_tunnel(args.port)
                 full_url = f"{tunnel_url}{mcp_path}"
-                print(f"\n  MCP URL: {full_url}")
-                if copy_to_clipboard(full_url):
-                    print("  (Copied to clipboard)")
-                print("  Add this in Claude.ai > Settings > Connectors > Add custom connector")
-                print("  Warning: This URL changes every time you restart.\n")
+                log.info("Tunnel URL: %s", full_url)
             except RuntimeError as e:
                 log.error("Tunnel failed: %s", e)
                 print(f"Tunnel failed: {e}")
+                full_url = None
         else:
+            full_url = None
             print(f"\n  Reverse proxy target: http://localhost:{args.port}{mcp_path}\n")
+            log.info("Reverse proxy target: http://localhost:%d%s", args.port, mcp_path)
+
+        # Show URL to user (tunnel mode only)
+        if full_url:
+            import platform
+            if platform.system() == "Darwin":
+                # macOS: NSWindow must be on main thread, so use console output instead
+                from server.tunnel import copy_to_clipboard
+                print(f"\n  MCP URL: {full_url}")
+                if copy_to_clipboard(full_url):
+                    print("  (Copied to clipboard)")
+                print("\n  How to add as a connector in Claude.ai:")
+                print("  1) Go to claude.ai, click on Customize")
+                print("  2) Click on Connectors")
+                print("  3) Click on the + sign next to the search icon")
+                print("  4) Click 'Add custom connector'")
+                print("  5) Give it a name and paste the URL above")
+                print("  6) Optional: Remove any old versions of the connector\n")
+            else:
+                from server.tunnel import show_url_window
+                url_thread = threading.Thread(target=show_url_window, args=(full_url,), daemon=True)
+                url_thread.start()
 
         log.info("Starting MCP server (HTTP mode, port %d)...", args.port)
         try:

@@ -23,6 +23,7 @@ if os.path.isdir(_lib_dir):
     sys.path.insert(0, _lib_dir)
 sys.path.insert(0, os.path.dirname(_server_dir))
 
+from server.comfyui import find_models_dir
 from server.config import COMFYUI_DEFAULT_EXE, load_local_config, save_local_config
 from server.downloader import DownloadState, download_models
 
@@ -125,6 +126,8 @@ def run_comfyui_setup(in_process: bool = False):
 def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool, in_process: bool = False):
     """First-run wizard: ComfyUI detection (if needed) → pack selection → download."""
     log.info("Opening first-time setup (need_comfyui=%s, %d packs)", need_comfyui, len(packs))
+    # Use a mutable container so inner functions can update models_dir
+    state = {"models_dir": models_dir}
     import tkinter as tk
     from tkinter import ttk
 
@@ -315,7 +318,7 @@ def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool,
         dl_state.update(status="idle", error=None)
         dl_retry_btn.config(state="disabled")
         dl_error_label.config(text="")
-        t = threading.Thread(target=download_models, args=(models_dir, model_list, dl_state), daemon=True)
+        t = threading.Thread(target=download_models, args=(state["models_dir"], model_list, dl_state), daemon=True)
         download_thread.clear()
         download_thread.append(t)
         t.start()
@@ -357,9 +360,49 @@ def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool,
         dl_retry_btn.config(command=lambda: start_download_thread(model_list))
         start_download_thread(model_list)
 
+    # ── Screen 1.5: "Please run ComfyUI first" ────────────────
+    run_comfyui_first_frame = tk.Frame(root, padx=20, pady=20)
+
+    tk.Label(
+        run_comfyui_first_frame,
+        text="ComfyUI needs to be run at least once before we can download models.",
+        font=("", 12),
+        wraplength=460,
+    ).pack(pady=(10, 10))
+
+    tk.Label(
+        run_comfyui_first_frame,
+        text="Please open ComfyUI Desktop, complete its initial setup, then click the button below.",
+        wraplength=460,
+        fg="gray",
+    ).pack(pady=(0, 15))
+
+    def check_models_dir():
+        resolved = find_models_dir()
+        if resolved:
+            state["models_dir"] = resolved
+            log.info("Models dir resolved: %s", resolved)
+            run_comfyui_first_frame.pack_forget()
+            select_frame.pack(fill="both", expand=True)
+        else:
+            run_comfyui_first_status.config(text="Models directory still not found. Please run ComfyUI first.", fg="red")
+
+    run_comfyui_first_status = tk.Label(run_comfyui_first_frame, text="", fg="gray")
+    run_comfyui_first_status.pack(pady=(0, 5))
+
+    tk.Button(run_comfyui_first_frame, text="I've run ComfyUI — check again", command=check_models_dir, width=30).pack(pady=5)
+
     def show_pack_selection():
         comfyui_frame.pack_forget()
-        select_frame.pack(fill="both", expand=True)
+        # Re-resolve models_dir now that ComfyUI has been detected
+        resolved = find_models_dir()
+        if resolved:
+            state["models_dir"] = resolved
+            log.info("Models dir resolved: %s", resolved)
+            select_frame.pack(fill="both", expand=True)
+        else:
+            log.warning("ComfyUI found but no models dir — needs initial setup")
+            run_comfyui_first_frame.pack(fill="both", expand=True)
 
     # ── Start ───────────────────────────────────────────────────
     if need_comfyui:

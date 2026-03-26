@@ -1,4 +1,4 @@
-# ComfyUI Image gen mcpb/connector
+# ComfyUI Image Gen
 
 This is just a vibecoded garbo thing I wanted to play around with. Basically just an mcp server/installable mcpb designed to wire up comfyUI with claude.
 
@@ -6,13 +6,13 @@ I didn't want to build this up to be a generic "do everything" connector as ther
 
 It's basically just meant to be pretty dumb and plug and play. Uses either Anima or Flux 2 klein 4B (Q8) - the latter requires Comfy-GGUF, you'll be guided on how to install it.
 
-The releases contain both mcpb and exe.
+## Windows
 
-MCPB is to install it in Claude Desktop. By default images don't really show up properly, you can use my [other project](https://github.com/lugia19/Claude-WebExtension-Launcher) to install Claude QoL in it which fixes that.
+You can use either the **MCPB** (Claude Desktop extension) or the **standalone MCP exe**.
 
-EXE just runs it as an HTTP server (optionally with a cloudflare tunnel) so you can wire it up to claude.ai as a connector.
+### MCPB (recommended for Claude Desktop)
 
-## Quick install guide
+By default images don't really show up properly in Claude Desktop. You can use my [other project](https://github.com/lugia19/Claude-WebExtension-Launcher) to install Claude QoL in it which fixes that.
 
 1) (Optional-ish) Install Claude Desktop from https://github.com/lugia19/Claude-WebExtension-Launcher
 2) Download the latest mcpb file from the releases page
@@ -23,3 +23,21 @@ EXE just runs it as an HTTP server (optionally with a cloudflare tunnel) so you 
 7) If anything fails (especially after installing GGUF) restart Claude/ComfyUI/your computer. It's all kind of unreliable.
 8) If you don't install a model pack but try to use it, it will download it.
 9) If you want to use a custom workflow, or to change which artists the model can choose from, you can go to Settings > Extensions > Configure for comfyui-image-gen. And set it there.
+
+### Standalone MCP exe
+
+The exe runs as an HTTP server (optionally with a cloudflare tunnel) so you can wire it up to claude.ai as a connector. Just run it and follow the prompts.
+
+## macOS
+
+On macOS, use the **standalone MCP exe** only. The MCPB works in theory, but Claude Desktop on macOS can't display tool-generated images properly, and the QoL extension that fixes this isn't available on macOS.
+
+Download the macOS MCP binary from the releases page, run it, and follow the prompts. It works the same as the Windows exe — you can use a cloudflare tunnel or your own reverse proxy.
+
+## Mobile / Remote access
+
+The standalone MCP exe is what you want for remote access from any device. However, the Claude mobile app does **not** display tool-generated images. You'll need to use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/lugia19/Claude-WebExtension-Launcher) installed so you can actually see the images.
+
+## Connector mode
+
+I'm not going to provide a full on guide for this. You can either use a cloudflare tunnel or some other form of reverse proxy to point to the service on port 9247.

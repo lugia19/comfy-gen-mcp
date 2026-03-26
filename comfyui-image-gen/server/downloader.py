@@ -3,9 +3,18 @@
 import hashlib
 import logging
 import os
+import ssl
 import threading
 import urllib.request
 from dataclasses import dataclass, field
+
+# Build an SSL context using certifi's CA bundle if available (needed for
+# PyInstaller builds on macOS where the system certs may not be accessible).
+try:
+    import certifi
+    _ssl_context = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _ssl_context = None
 
 log = logging.getLogger("comfy-mcp")
 
@@ -89,7 +98,7 @@ def download_models(models_dir: str, models: list[dict], state: DownloadState):
         try:
             req = urllib.request.Request(model["url"], headers={"User-Agent": "comfyui-image-gen/1.0"})
             sha256 = hashlib.sha256()
-            with urllib.request.urlopen(req) as resp, open(part, "wb") as f:
+            with urllib.request.urlopen(req, context=_ssl_context) as resp, open(part, "wb") as f:
                 content_length = resp.headers.get("Content-Length")
                 log.info("  Server Content-Length: %s", content_length or "unknown")
                 downloaded = 0
