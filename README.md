@@ -1,43 +1,78 @@
-# ComfyUI Image Gen
+# Comfy-Gen-MCP
 
-This is just a vibecoded garbo thing I wanted to play around with. Basically just an mcp server/installable mcpb designed to wire up comfyUI with claude.
+This is just a vibecoded garbo thing I wanted to play around with. It's an MCP server / installable MCPB that wires up ComfyUI with Claude for image generation.
 
-I didn't want to build this up to be a generic "do everything" connector as there are already existing projects for that, this project just has some built-in API workflows with the ability to load one custom one.
+I didn't want to build a generic "do everything" ComfyUI controller — there are already projects for that. This one just generates images. Ships with built-in workflows for **Anima** (anime/illustration) and **Flux 2 Klein** (realistic/general-purpose), plus support for one custom workflow.
 
-It's basically just meant to be pretty dumb and plug and play. Uses either Anima or Flux 2 klein 4B (Q8) - the latter requires Comfy-GGUF, you'll be guided on how to install it.
+Meant to be pretty dumb and plug and play.
 
-## Windows
+## Prerequisites
 
-You can use either the **MCPB** (Claude Desktop extension) or the **standalone MCP exe**.
+- [ComfyUI Desktop](https://www.comfy.org/download) installed and run at least once (so it creates its config)
+- For Flux 2 Klein: the [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) custom node (you'll be guided through installing it, but if you want to pre-install it, you can do so via the Extensions button in ComfyUI)
 
-### MCPB (recommended for Claude Desktop)
+## Installation
 
-By default images don't really show up properly in Claude Desktop. You can use my [other project](https://github.com/lugia19/Claude-WebExtension-Launcher) to install Claude QoL in it which fixes that.
+### Option 1: Claude Desktop Extension (MCPB) — Windows only
 
-1) (Optional-ish) Install Claude Desktop from https://github.com/lugia19/Claude-WebExtension-Launcher
-2) Download the latest mcpb file from the releases page
-3) Run the launcher, go to Settings > Extensions > Advanced Settings > Install Extension > Install the file you downloaded
-4) If a setup window pops up, great, follow it. If it doesn't, restart the client.
-5) Follow the setup, pick which models you want to download, etc.
-6) If you chose to install Flux Klein, you will need to install Comfy-GGUF in ComfyUI. The model will guide you through the steps as soon as you try to use it and it fails.
-7) If anything fails (especially after installing GGUF) restart Claude/ComfyUI/your computer. It's all kind of unreliable.
-8) If you don't install a model pack but try to use it, it will download it.
-9) If you want to use a custom workflow, or to change which artists the model can choose from, you can go to Settings > Extensions > Configure for comfyui-image-gen. And set it there.
+Best for local use with Claude Desktop.
 
-### Standalone MCP exe
+> **Note:** Claude Desktop doesn't display tool-generated images well by default. You can fix this by installing Claude Desktop via my [modified launcher](https://github.com/lugia19/Claude-WebExtension-Launcher), which patches in the Claude QoL web extension.
 
-The exe runs as an HTTP server (optionally with a cloudflare tunnel) so you can wire it up to claude.ai as a connector. Just run it and follow the prompts.
+1. Download the `.mcpb` file from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
+2. In Claude Desktop: Settings > Extensions > Advanced Settings > Install Extension
+3. A setup window should appear — if it doesn't, restart Claude Desktop
+4. Pick which models to download, configure artist styles, etc.
+5. If you skip a model pack, it'll download automatically when you first try to use it
 
-## macOS
+### Option 2: Standalone MCP Server (exe / .app) — Windows & macOS
 
-On macOS, use the **standalone MCP exe** only. The MCPB works in theory, but Claude Desktop on macOS can't display tool-generated images properly, and the QoL extension that fixes this isn't available on macOS.
+Best for remote access via claude.ai, or for macOS users (since the MCPB can't display images properly on macOS without the QoL extension, which isn't available on Mac).
 
-Download the macOS MCP binary from the releases page, run it, and follow the prompts. It works the same as the Windows exe — you can use a cloudflare tunnel or your own reverse proxy.
+**Windows:**
+1. Download the `.exe` from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
+2. Run it — a setup wizard will guide you through first-time configuration
+3. Choose between a Cloudflare tunnel (easiest) or your own reverse proxy
+4. The server window can be minimized to the system tray
 
-## Mobile / Remote access
+**macOS:**
+1. Download the `.zip` from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
+2. Extract and move `Comfy-Gen-MCP.app` to `/Applications`
+3. Run `xattr -cr "/Applications/Comfy-Gen-MCP.app"` in Terminal (one-time, to bypass Gatekeeper)
+4. Double-click the app — same setup wizard as Windows
 
-The standalone MCP exe is what you want for remote access from any device. However, the Claude mobile app does **not** display tool-generated images. You'll need to use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/lugia19/Claude-WebExtension-Launcher) installed so you can actually see the images.
+### Adding as a connector on claude.ai
 
-## Connector mode
+When using the standalone server with a Cloudflare tunnel, a window will show your MCP URL. To connect it:
 
-I'm not going to provide a full on guide for this. You can either use a cloudflare tunnel or some other form of reverse proxy to point to the service on port 9247.
+1. Go to [claude.ai](https://claude.ai), click on **Customize**
+2. Click on **Connectors**
+3. Click the **+** sign next to the search icon
+4. Click **Add custom connector**
+5. Give it a name and paste the URL
+6. Optional: Remove any old versions of the connector
+
+> **Note:** The tunnel URL changes every time you restart the server.
+
+## Mobile / Remote Access
+
+The standalone server is what you want for remote access. However, the **Claude mobile app does not display tool-generated images**. Use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/nicekid1/Claude-Enhancement-Suite) installed.
+
+## Configuration
+
+**MCPB (Claude Desktop):** Settings > Extensions > Configure for comfyui-image-gen
+
+**Standalone exe:** Settings are stored in `local_config.json` next to the executable. The first-run wizard handles initial setup.
+
+Available settings:
+- **Anima Artist Styles** — comma-separated list of @artist tags (browse styles at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
+- **ComfyUI URL** — default `http://127.0.0.1:8000`, change if your ComfyUI is on a different port
+- **ComfyUI Executable Path** — only needed if ComfyUI is installed in a non-default location
+- **Custom Workflow** — path to a ComfyUI workflow exported in API format (.json)
+
+## Troubleshooting
+
+- **If anything fails after installing GGUF:** restart Claude Desktop, ComfyUI, or your computer. ComfyUI sometimes leaves ghost processes behind.
+- **"Cannot find ComfyUI's models directory":** open ComfyUI Desktop and complete its initial setup first. It needs to run at least once to create its config file.
+- **Slow generation / timeouts:** If generation takes longer than ~55 seconds, the server will return a request token. Claude will automatically retry to fetch the result. On slower hardware (especially macOS with MPS), this is normal.
+- **macOS "damaged app" error:** run `xattr -cr "/Applications/Comfy-Gen-MCP.app"` in Terminal.

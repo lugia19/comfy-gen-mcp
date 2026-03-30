@@ -48,7 +48,6 @@ def find_comfyui_install() -> str | None:
     log.info("ComfyUI exe not found")
     return None
 
-
 def find_models_dir() -> str | None:
     """Find the ComfyUI models directory using its config.json (Amendment 1)."""
     # Primary: read ComfyUI's own config

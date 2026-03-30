@@ -1,4 +1,8 @@
-"""Cloudflare tunnel and clipboard utilities for HTTP connector mode."""
+"""Cloudflare tunnel and clipboard utilities for HTTP connector mode.
+
+UI functions (show_tunnel_choice, show_url_window, show_server_running_window)
+have been moved to server/ui.py (PyQt6).
+"""
 
 import io
 import logging
@@ -36,7 +40,6 @@ def get_cloudflared_path() -> str:
         if os.path.isfile(candidate):
             return candidate
 
-    # Check next to our script
     ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     local = os.path.join(ext_dir, name)
     if os.path.isfile(local):
@@ -108,110 +111,3 @@ def start_cloudflare_tunnel(port: int) -> tuple[subprocess.Popen, str]:
 
     proc.kill()
     raise RuntimeError("Timed out waiting for cloudflared URL.")
-
-
-def show_tunnel_choice(local_cfg: dict, save_fn) -> bool:
-    """Show a tkinter dialog for tunnel vs reverse proxy choice. Returns True for tunnel."""
-    import tkinter as tk
-
-    result = {"use_tunnel": True}  # default
-
-    root = tk.Tk()
-    root.title("ComfyUI Image Gen — Connection")
-    root.resizable(False, False)
-    root.geometry("400x220")
-
-    root.update_idletasks()
-    x = (root.winfo_screenwidth() - 400) // 2
-    y = (root.winfo_screenheight() - 220) // 2
-    root.geometry(f"+{x}+{y}")
-
-    frame = tk.Frame(root, padx=20, pady=15)
-    frame.pack(fill="both", expand=True)
-
-    tk.Label(frame, text="How do you want to expose the server?", font=("", 12)).pack(pady=(0, 10))
-
-    choice_var = tk.IntVar(value=1)
-    tk.Radiobutton(frame, text="Cloudflare tunnel (easiest, URL changes on restart)", variable=choice_var, value=1, anchor="w").pack(fill="x")
-    tk.Radiobutton(frame, text="I have my own domain / reverse proxy", variable=choice_var, value=2, anchor="w").pack(fill="x")
-
-    remember_var = tk.BooleanVar(value=False)
-    tk.Checkbutton(frame, text="Remember this choice", variable=remember_var).pack(pady=(10, 5))
-
-    def on_start():
-        result["use_tunnel"] = choice_var.get() == 1
-        if remember_var.get():
-            local_cfg["use_tunnel"] = result["use_tunnel"]
-            save_fn(local_cfg)
-            log.info("Saved tunnel preference: %s", result["use_tunnel"])
-        root.destroy()
-
-    tk.Button(frame, text="Start", command=on_start, width=15).pack(pady=(5, 0))
-
-    root.protocol("WM_DELETE_WINDOW", lambda: (result.update({"use_tunnel": True}), root.destroy()))
-    root.mainloop()
-
-    return result["use_tunnel"]
-
-
-def show_url_window(url: str):
-    """Show a tkinter window with the MCP URL, copy button, and connector setup instructions."""
-    import tkinter as tk
-
-    root = tk.Tk()
-    root.title("ComfyUI Image Gen — MCP Server")
-    root.resizable(False, False)
-    root.geometry("520x420")
-
-    root.update_idletasks()
-    x = (root.winfo_screenwidth() - 520) // 2
-    y = (root.winfo_screenheight() - 420) // 2
-    root.geometry(f"+{x}+{y}")
-
-    frame = tk.Frame(root, padx=20, pady=15)
-    frame.pack(fill="both", expand=True)
-
-    tk.Label(frame, text="MCP Server Running", font=("", 14, "bold")).pack(pady=(0, 10))
-
-    # URL display
-    tk.Label(frame, text="MCP URL:", anchor="w").pack(fill="x")
-    url_var = tk.StringVar(value=url)
-    url_entry = tk.Entry(frame, textvariable=url_var, state="readonly", width=60)
-    url_entry.pack(fill="x", pady=(2, 5))
-
-    status_label = tk.Label(frame, text="", fg="green")
-    status_label.pack()
-
-    def do_copy():
-        root.clipboard_clear()
-        root.clipboard_append(url)
-        copy_to_clipboard(url)
-        status_label.config(text="Copied to clipboard!")
-
-    tk.Button(frame, text="Copy URL", command=do_copy, width=15).pack(pady=(0, 10))
-
-    # Instructions
-    instructions = tk.Label(
-        frame,
-        text=(
-            "How to add as a connector in Claude.ai:\n\n"
-            "1) Go to claude.ai, click on Customize\n"
-            "2) Click on Connectors\n"
-            "3) Click on the + sign next to the search icon\n"
-            "4) Click 'Add custom connector'\n"
-            "5) Give it a name and paste the URL above\n"
-            "6) Optional: Remove any old versions of the connector"
-        ),
-        justify="left",
-        anchor="w",
-        wraplength=460,
-    )
-    instructions.pack(fill="x", pady=(5, 10))
-
-    tk.Label(
-        frame,
-        text="The server is running in the background.\nYou can close this window. Press Ctrl+C in the console to stop the server.",
-        fg="gray",
-    ).pack(pady=(5, 0))
-
-    root.mainloop()

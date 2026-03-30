@@ -7,9 +7,11 @@ if [ ! -d "build_venv" ]; then
 fi
 source build_venv/bin/activate
 
-pip install pyinstaller httpx mcp Pillow certifi websocket-client
+pip install pyinstaller httpx mcp Pillow certifi websocket-client PyQt6
 pyinstaller --onefile --name comfyui-image-gen-mcp \
     --add-data "comfyui-image-gen/model_packs:model_packs" \
+    --add-data "comfyui-image-gen/server/tray_icon.png:server" \
+    --icon "comfyui-image-gen/icon.ico" \
     --paths "comfyui-image-gen" \
     --hidden-import httpx \
     --hidden-import httpx._transports \
@@ -38,12 +40,17 @@ pyinstaller --onefile --name comfyui-image-gen-mcp \
     --hidden-import server.tunnel \
     --hidden-import server.setup_ui \
     --hidden-import server.comfy_job \
+    --hidden-import server.ui \
     --hidden-import websocket \
+    --hidden-import PyQt6 \
+    --hidden-import PyQt6.QtCore \
+    --hidden-import PyQt6.QtGui \
+    --hidden-import PyQt6.QtWidgets \
     --exclude-module mcp.cli \
     comfyui-image-gen/server/main.py
 
 # ── Package as .app bundle ──────────────────────────────────────
-APP_NAME="ComfyUI Image Gen"
+APP_NAME="Comfy-Gen-MCP"
 APP_BUNDLE="dist/${APP_NAME}.app"
 BINARY="dist/comfyui-image-gen-mcp"
 
@@ -72,7 +79,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.lugia19.comfyui-image-gen</string>
     <key>CFBundleName</key>
-    <string>ComfyUI Image Gen</string>
+    <string>Comfy-Gen-MCP</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

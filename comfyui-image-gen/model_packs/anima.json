@@ -10,21 +10,21 @@
       "filename": "anima-preview2.safetensors",
       "subfolder": "diffusion_models",
       "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-preview2.safetensors",
-      "size_bytes": 4508876368,
+      "size_bytes": 4182218360,
       "sha256": "a21ff6807e31cbd2e6e7f24de07921b3190cd832819389f6b6b27e3a04e82f57"
     },
     {
       "filename": "qwen_3_06b_base.safetensors",
       "subfolder": "text_encoders",
       "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/text_encoders/qwen_3_06b_base.safetensors",
-      "size_bytes": 3432702976,
+      "size_bytes": 1192135096,
       "sha256": "cd2a512003e2f9f3cd3c32a9c3573f820bb28c940f73c57b1ddaa983d9223eba"
     },
     {
       "filename": "qwen_image_vae.safetensors",
       "subfolder": "vae",
       "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/vae/qwen_image_vae.safetensors",
-      "size_bytes": 167335342,
+      "size_bytes": 253806246,
       "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f"
     }
   ],

@@ -1,4 +1,4 @@
-"""Constants for the ComfyUI Image Gen DXT extension."""
+"""Constants for the Comfy-Gen-MCP DXT extension."""
 
 import json
 import os
@@ -41,6 +41,11 @@ else:
 
 MODEL_PACKS_DIR = os.path.join(_BUNDLE_DIR, "model_packs")
 LOCAL_CONFIG_PATH = os.path.join(_EXT_DIR, "local_config.json")
+
+
+def is_http_mode() -> bool:
+    """Check if we're running in HTTP connector mode (frozen exe or --http flag)."""
+    return getattr(sys, "frozen", False) or "--http" in sys.argv
 
 
 def load_local_config() -> dict:

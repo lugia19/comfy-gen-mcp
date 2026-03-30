@@ -14,7 +14,8 @@ New-Item -ItemType Directory -Path $subDir -Force | Out-Null
 # Copy server and model_packs into the subfolder
 $subItems = @(
     "comfyui-image-gen\server",
-    "comfyui-image-gen\model_packs"
+    "comfyui-image-gen\model_packs",
+    "comfyui-image-gen\icon.ico"
 )
 
 foreach ($item in $subItems) {
