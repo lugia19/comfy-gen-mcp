@@ -40,6 +40,7 @@ Best for remote access via claude.ai, or for macOS users (since the MCPB can't d
 2. Extract and move `Comfy-Gen-MCP.app` to `/Applications`
 3. Run `xattr -cr "/Applications/Comfy-Gen-MCP.app"` in Terminal (one-time, to bypass Gatekeeper)
 4. Double-click the app — same setup wizard as Windows
+5. If something doesn't work, post about it. I've done my best to get it working, but MacOS can be very uncooperative. So consider this a work in progress.
 
 ### Adding as a connector on claude.ai
 
