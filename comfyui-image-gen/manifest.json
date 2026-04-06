@@ -18,6 +18,7 @@
         "COMFYUI_URL": "${user_config.comfyui_url}",
         "COMFYUI_EXE": "${user_config.comfyui_exe}",
         "CUSTOM_WORKFLOW": "${user_config.custom_workflow}",
+        "CUSTOM_WORKFLOW_PROMPT_NODE": "${user_config.custom_workflow_prompt_node}",
         "ANIMA_ARTISTS": "${user_config.anima_artists}"
       }
     }
@@ -64,7 +65,13 @@
     "custom_workflow": {
       "type": "string",
       "title": "Custom Workflow Path (optional)",
-      "description": "Path to a ComfyUI workflow exported in API format (.json). If provided, this replaces the built-in workflow.",
+      "description": "Path to a ComfyUI workflow exported in API format (.json). If provided, this replaces the built-in workflow. Restart the extension after changing this.",
+      "required": false
+    },
+    "custom_workflow_prompt_node": {
+      "type": "string",
+      "title": "Custom Workflow Prompt Node Title (optional)",
+      "description": "The title (_meta.title) of the node in your custom workflow where the prompt text should be injected (e.g. 'CLIP Text Encode (Prompt)'). If not set, auto-detection is attempted by tracing the first KSampler's positive input. Restart the extension after changing this.",
       "required": false
     }
   },

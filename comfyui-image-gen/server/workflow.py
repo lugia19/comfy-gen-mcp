@@ -63,19 +63,44 @@ def build_prompt(
     return wf
 
 
-def load_custom_workflow(path: str) -> tuple[dict, str, list[str]]:
-    """Load a custom workflow JSON, returning (workflow, prompt_node_id, sampler_node_ids)."""
+def load_custom_workflow(path: str, prompt_node_title: str | None = None) -> tuple[dict, str, list[str]]:
+    """Load a custom workflow JSON, returning (workflow, prompt_node_id, sampler_node_ids).
+
+    If *prompt_node_title* is provided, the node whose ``_meta.title`` matches
+    (case-insensitive) is used as the prompt node.  Otherwise auto-detection is
+    attempted via KSampler tracing.
+    """
     with open(path) as f:
         wf = json.load(f)
 
-    # Find all KSamplers
+    # Find all KSamplers (used for seed randomization)
     samplers = []
     for node_id, node in wf.items():
         if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
             samplers.append(node_id)
 
+    # If the user explicitly provided a prompt node title, find the matching node
+    if prompt_node_title:
+        target = prompt_node_title.strip().lower()
+        for node_id, node in wf.items():
+            meta_title = node.get("_meta", {}).get("title", "").strip().lower()
+            if meta_title == target:
+                return wf, node_id, samplers
+        available = [
+            f"  {nid}: {n.get('_meta', {}).get('title', '(no title)')}"
+            for nid, n in wf.items()
+        ]
+        raise ValueError(
+            f"No node with title '{prompt_node_title}' found in {path}.\n"
+            f"Available nodes:\n" + "\n".join(available)
+        )
+
+    # Auto-detection: requires at least one KSampler
     if not samplers:
-        raise ValueError(f"No KSampler found in {path}. Is this an API-format export?")
+        raise ValueError(
+            f"No KSampler found in {path} and no prompt node title configured. "
+            f"Please set the 'Custom Workflow Prompt Node Title' in extension settings."
+        )
 
     # Priority 1: node explicitly named "prompt"
     for node_id, node in wf.items():

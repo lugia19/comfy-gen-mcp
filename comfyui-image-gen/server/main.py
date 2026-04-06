@@ -198,12 +198,13 @@ def _download_in_background(pack: dict):
 
 # ── Startup ───────────────────────────────────────────────────────────
 
-def startup() -> tuple[list[dict], dict | None]:
+def startup() -> tuple[list[dict], dict | None, str | None]:
     """Load model packs, detect ComfyUI, return list of packs to register as tools."""
     global comfyui_url, comfyui_exe, models_dir
 
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
     custom_workflow = _env("CUSTOM_WORKFLOW")
+    custom_workflow_prompt_node_title = _env("CUSTOM_WORKFLOW_PROMPT_NODE")
     anima_artists = _env("ANIMA_ARTISTS")
 
     log.info("=== Comfy-Gen-MCP startup ===")
@@ -277,26 +278,32 @@ def startup() -> tuple[list[dict], dict | None]:
 
     # Load custom workflow as a separate tool
     custom_pack = None
+    custom_workflow_error = None
     if custom_workflow and os.path.isfile(custom_workflow):
         log.info("Loading custom workflow: %s", custom_workflow)
-        wf, pnid, snids = load_custom_workflow(custom_workflow)
-        custom_pack = {
-            "name": "custom",
-            "display_name": "Custom Workflow",
-            "tool_name": "generate_custom_image",
-            "tool_description": (
-                "Generate an image using a user-provided custom ComfyUI workflow. "
-                "Use natural language to describe the image. "
-                "The aspect_ratio parameter controls image shape: "
-                "square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square."
-            ),
-            "workflow": wf,
-            "prompt_node_id": pnid,
-            "seed_nodes": [{"node_id": sid, "field": "seed"} for sid in snids],
-            "models": [],
-        }
-        log.info("Custom workflow loaded: prompt_node=%s, samplers=%s", pnid, snids)
+        try:
+            wf, pnid, snids = load_custom_workflow(custom_workflow, custom_workflow_prompt_node_title)
+            custom_pack = {
+                "name": "custom",
+                "display_name": "Custom Workflow",
+                "tool_name": "generate_custom_image",
+                "tool_description": (
+                    "Generate an image using a user-provided custom ComfyUI workflow. "
+                    "Use natural language to describe the image. "
+                    "The aspect_ratio parameter controls image shape: "
+                    "square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square."
+                ),
+                "workflow": wf,
+                "prompt_node_id": pnid,
+                "seed_nodes": [{"node_id": sid, "field": "seed"} for sid in snids],
+                "models": [],
+            }
+            log.info("Custom workflow loaded: prompt_node=%s, samplers=%s", pnid, snids)
+        except ValueError as exc:
+            custom_workflow_error = str(exc)
+            log.error("Failed to load custom workflow: %s", exc)
     elif custom_workflow:
+        custom_workflow_error = f"Custom workflow file not found: {custom_workflow}"
         log.warning("Custom workflow path not found: %s", custom_workflow)
 
     # Log model status
@@ -307,12 +314,12 @@ def startup() -> tuple[list[dict], dict | None]:
         else:
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])
 
-    return packs, custom_pack
+    return packs, custom_pack, custom_workflow_error
 
 
 # ── Tool registration ─────────────────────────────────────────────────
 
-def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None):
+def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, custom_workflow_error: str | None = None):
     """Register all tools on the FastMCP instance."""
 
     # Custom workflow tool
@@ -330,11 +337,15 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None):
         global comfyui_process, comfyui_url
 
         if custom_pack is None:
-            return CallToolResult(
-                content=[TextContent(type="text", text=(
+            if custom_workflow_error:
+                msg = f"Custom workflow failed to load: {custom_workflow_error}"
+            else:
+                msg = (
                     "No custom workflow is configured. "
                     "To use this tool, set a workflow path in Settings > Extensions > Configure > Custom Workflow Path."
-                ))]
+                )
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)]
             )
 
         log.info("generate_custom_image called, aspect=%s, prompt=%r", aspect_ratio, prompt[:100])
@@ -498,6 +509,7 @@ def main():
             "COMFYUI_URL": "comfyui_url",
             "COMFYUI_EXE": "comfyui_exe",
             "CUSTOM_WORKFLOW": "custom_workflow",
+            "CUSTOM_WORKFLOW_PROMPT_NODE": "custom_workflow_prompt_node",
             "ANIMA_ARTISTS": "anima_artists",
         }
         for env_key, cfg_key in env_map.items():
@@ -506,7 +518,7 @@ def main():
                 os.environ[env_key] = val
 
     # Startup: detect ComfyUI, load packs, run first-time setup if needed
-    packs, custom_pack = startup()
+    packs, custom_pack, custom_workflow_error = startup()
 
     # Create FastMCP
     if is_http_mode():
@@ -533,7 +545,7 @@ def main():
         mcp = FastMCP("Comfy-Gen-MCP")
 
     # Register all tools
-    register_tools(mcp, packs, custom_pack)
+    register_tools(mcp, packs, custom_pack, custom_workflow_error)
 
     # ── Run ───────────────────────────────────────────────────────
     if is_http_mode():
