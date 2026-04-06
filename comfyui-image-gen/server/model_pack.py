@@ -59,3 +59,63 @@ def get_missing_models(models_dir: str, pack: dict) -> list[dict]:
         if not os.path.isfile(os.path.join(models_dir, m["subfolder"], m["filename"])):
             missing.append(m)
     return missing
+
+
+def group_packs_by_tool(packs: list[dict]) -> dict[str, list[dict]]:
+    """Group model packs by tool_name. Returns {tool_name: [pack, ...]}."""
+    groups: dict[str, list[dict]] = {}
+    for pack in packs:
+        groups.setdefault(pack["tool_name"], []).append(pack)
+    return groups
+
+
+def resolve_pack_selections(groups: dict[str, list[dict]], env_reader=None) -> list[dict]:
+    """Pick one pack per tool_name group based on user config.
+
+    Resolution order:
+    1. Env var PACK_SELECT_{TOOL_NAME_UPPER} (DXT settings override)
+    2. local_config.json pack_selections[tool_name]
+    3. Pack with is_default: true
+    4. First pack in group
+    """
+    from server.config import load_local_config
+    local_cfg = load_local_config()
+    selections = local_cfg.get("pack_selections", {})
+
+    resolved = []
+    for tool_name, group in groups.items():
+        if len(group) == 1:
+            resolved.append(group[0])
+            continue
+
+        # 1. Env var override
+        env_key = f"PACK_SELECT_{tool_name.upper()}"
+        env_val = env_reader(env_key) if env_reader else None
+        if env_val:
+            match = next((p for p in group if p["name"] == env_val), None)
+            if match:
+                log.info("Pack '%s' selected for %s via env var", match["name"], tool_name)
+                resolved.append(match)
+                continue
+
+        # 2. local_config.json
+        cfg_val = selections.get(tool_name)
+        if cfg_val:
+            match = next((p for p in group if p["name"] == cfg_val), None)
+            if match:
+                log.info("Pack '%s' selected for %s via local_config", match["name"], tool_name)
+                resolved.append(match)
+                continue
+
+        # 3. is_default flag
+        default = next((p for p in group if p.get("is_default")), None)
+        if default:
+            log.info("Pack '%s' selected for %s as default", default["name"], tool_name)
+            resolved.append(default)
+            continue
+
+        # 4. First pack
+        log.info("Pack '%s' selected for %s as first in group", group[0]["name"], tool_name)
+        resolved.append(group[0])
+
+    return resolved

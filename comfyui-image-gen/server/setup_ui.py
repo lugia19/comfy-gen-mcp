@@ -32,21 +32,6 @@ def main():
         print("Usage: setup_ui.py --comfyui | --download <models_dir> <pack_json> | --first-run <models_dir> <packs_dir>", file=sys.stderr)
         sys.exit(1)
 
-    # Check lockfile to prevent duplicate setup windows (Claude Desktop restarts the server)
-    from server.config import _EXT_DIR
-    lockfile = os.path.join(_EXT_DIR, ".setup_running.lock")
-    if os.path.isfile(lockfile):
-        import time
-        try:
-            age = time.time() - os.path.getmtime(lockfile)
-            if age < 300:
-                log.info("Setup lockfile exists (%.0fs old) — another setup is running, exiting.", age)
-                sys.exit(0)
-            else:
-                log.warning("Stale setup lockfile (%.0fs old), ignoring.", age)
-        except OSError:
-            pass
-
     mode = sys.argv[1]
 
     if mode == "--comfyui":
@@ -79,15 +64,13 @@ def main():
             sys.exit(1)
         models_dir = sys.argv[2]
         packs_dir = sys.argv[3]
-        packs = []
-        if os.path.isdir(packs_dir):
-            for fname in sorted(os.listdir(packs_dir)):
-                if fname.endswith(".json"):
-                    with open(os.path.join(packs_dir, fname), encoding="utf-8") as f:
-                        packs.append(json.load(f))
+
+        from server.model_pack import load_all_packs, group_packs_by_tool
+        packs = load_all_packs(packs_dir)
         if not packs:
             log.error("No model packs found in %s", packs_dir)
             sys.exit(1)
+        groups = group_packs_by_tool(packs)
 
         from server.config import COMFYUI_DEFAULT_EXE, load_local_config
         need_comfyui = True
@@ -99,7 +82,7 @@ def main():
                 need_comfyui = False
 
         from server.ui import run_first_time_setup
-        run_first_time_setup(models_dir, packs, need_comfyui)
+        run_first_time_setup(models_dir, packs, groups, need_comfyui)
 
     else:
         print(f"Unknown mode: {mode}", file=sys.stderr)

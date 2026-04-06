@@ -5,6 +5,7 @@ import os
 import platform
 import sys
 
+EXTENSION_VERSION = "1.0.0"
 COMFYUI_DEFAULT_URL = "http://127.0.0.1:8000"
 
 MAX_IMAGE_SIZE = 1024

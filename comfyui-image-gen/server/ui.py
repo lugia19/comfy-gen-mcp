@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QPalette, QColor
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -30,7 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from server.config import COMFYUI_DEFAULT_EXE, load_local_config, save_local_config
+from server.config import COMFYUI_DEFAULT_EXE, EXTENSION_VERSION, load_local_config, save_local_config
 
 log = logging.getLogger("comfy-mcp")
 
@@ -154,9 +155,9 @@ def run_comfyui_setup(in_process: bool = False):
 
 # ── 2. First-Time Setup Wizard ───────────────────────────────────────
 
-def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool, in_process: bool = False):
+def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, list[dict]], need_comfyui: bool, in_process: bool = False):
     """First-run wizard: ComfyUI detection → pack selection → artist config → download."""
-    log.info("Opening first-time setup (need_comfyui=%s, %d packs)", need_comfyui, len(packs))
+    log.info("Opening first-time setup (need_comfyui=%s, %d packs, %d groups)", need_comfyui, len(packs), len(groups))
     from server.comfyui import find_models_dir
     from server.downloader import DownloadState, download_models
 
@@ -277,29 +278,91 @@ def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool,
             return f"{n / 1_048_576:.0f} MB"
         return f"{n / 1024:.0f} KB"
 
-    pack_checkboxes: list[tuple[dict, QCheckBox]] = []
-    for pack in packs:
-        total_size = sum(m["size_bytes"] for m in pack["models"])
-        cb = QCheckBox(f"{pack['display_name']} ({_format_bytes(total_size)})")
-        cb.setChecked(True)
-        desc = QLabel(f"  {pack.get('description', '')}")
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 8px;")
-        sl.addWidget(cb)
-        sl.addWidget(desc)
-        pack_checkboxes.append((pack, cb))
+    # Build group-aware selection UI
+    # For single-pack groups: checkbox (as before)
+    # For multi-pack groups: radio buttons (pick one) + skip option
+    pack_checkboxes: list[tuple[dict, QCheckBox]] = []  # single-pack groups
+    radio_groups: list[tuple[str, QButtonGroup, list[tuple[dict, QRadioButton]]]] = []  # multi-pack groups
 
-    note = QLabel("You can always use models you didn't select — they'll download on first use.")
+    for tool_name, group in groups.items():
+        if len(group) == 1:
+            # Single pack — checkbox as before
+            pack = group[0]
+            total_size = sum(m["size_bytes"] for m in pack["models"])
+            cb = QCheckBox(f"{pack['display_name']} ({_format_bytes(total_size)})")
+            cb.setChecked(True)
+            desc = QLabel(f"  {pack.get('description', '')}")
+            desc.setWordWrap(True)
+            desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 8px;")
+            sl.addWidget(cb)
+            sl.addWidget(desc)
+            pack_checkboxes.append((pack, cb))
+        else:
+            # Multi-pack group — radio buttons
+            # Derive a readable header from the tool_name
+            header_text = tool_name.replace("generate_", "").replace("_", " ").title() + " Model"
+            sl.addWidget(QLabel(f"<b>{header_text}:</b>"))
+
+            btn_group = QButtonGroup(select_page)
+            btn_group.setExclusive(True)
+            group_radios: list[tuple[dict, QRadioButton]] = []
+
+            # Pre-select user's previous choice if re-running setup
+            existing_cfg = load_local_config()
+            prev_selection = existing_cfg.get("pack_selections", {}).get(tool_name)
+
+            for pack in group:
+                total_size = sum(m["size_bytes"] for m in pack["models"])
+                rb = QRadioButton(f"{pack['display_name']} ({_format_bytes(total_size)})")
+                if prev_selection:
+                    if pack["name"] == prev_selection:
+                        rb.setChecked(True)
+                elif pack.get("is_default"):
+                    rb.setChecked(True)
+                desc = QLabel(f"  {pack.get('description', '')}")
+                desc.setWordWrap(True)
+                desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 4px;")
+                btn_group.addButton(rb)
+                sl.addWidget(rb)
+                sl.addWidget(desc)
+                group_radios.append((pack, rb))
+
+            # "Skip" option
+            skip_rb = QRadioButton("Skip (download later)")
+            skip_rb.setStyleSheet("color: gray;")
+            btn_group.addButton(skip_rb)
+            sl.addWidget(skip_rb)
+
+            # If no pack has is_default, select the first one
+            if not any(rb.isChecked() for _, rb in group_radios):
+                group_radios[0][1].setChecked(True)
+
+            radio_groups.append((tool_name, btn_group, group_radios))
+
+    note = QLabel("You can always change your model selection later in Settings.")
     note.setStyleSheet("color: gray;")
     sl.addWidget(note)
 
     install_btn = QPushButton("Install Selected")
 
     def on_install():
+        # Collect selected packs from checkboxes (single-pack groups)
         selected = [p for p, cb in pack_checkboxes if cb.isChecked()]
+
+        # Collect selected packs from radio groups (multi-pack groups)
+        # Also save pack_selections to local_config
+        cfg = load_local_config()
+        pack_selections = cfg.get("pack_selections", {})
+        for tool_name, btn_group, group_radios in radio_groups:
+            chosen = next((p for p, rb in group_radios if rb.isChecked()), None)
+            if chosen:
+                selected.append(chosen)
+                pack_selections[tool_name] = chosen["name"]
+        cfg["pack_selections"] = pack_selections
+        save_local_config(cfg)
+
         if not selected:
-            cfg = load_local_config()
-            cfg["setup_complete"] = True
+            cfg["setup_version"] = EXTENSION_VERSION
             save_local_config(cfg)
             wizard.accept()
             return
@@ -417,7 +480,7 @@ def run_first_time_setup(models_dir: str, packs: list[dict], need_comfyui: bool,
                 dl_progress.setValue(100)
                 dl_detail_label.setText("Setup complete.")
                 cfg = load_local_config()
-                cfg["setup_complete"] = True
+                cfg["setup_version"] = EXTENSION_VERSION
                 save_local_config(cfg)
                 QTimer.singleShot(1500, wizard.accept)
                 return

@@ -34,9 +34,9 @@ from server.comfyui import (
     find_models_dir,
     launch_comfyui,
 )
-from server.config import COMFYUI_DEFAULT_URL, MODEL_PACKS_DIR, _EXT_DIR, is_http_mode
+from server.config import COMFYUI_DEFAULT_URL, EXTENSION_VERSION, MODEL_PACKS_DIR, _EXT_DIR, is_http_mode
 from server.comfy_job import ComfyJob, wait_for_job
-from server.model_pack import check_models_present, load_all_packs
+from server.model_pack import check_models_present, group_packs_by_tool, load_all_packs, resolve_pack_selections
 from server.workflow import load_custom_workflow
 
 log = logging.getLogger("comfy-mcp")
@@ -73,6 +73,10 @@ models_dir: str | None = None
 _downloading: dict[str, bool] = {}
 setup_running: bool = False  # True while first-run or ComfyUI setup is in progress
 _server_window = None  # set in HTTP mode for cross-thread download UI
+
+# Active pack per tool_name — looked up dynamically by handlers.
+# Updated after background setup completes so selections take effect without restart.
+_active_packs: dict[str, dict] = {}
 
 # ── Job queue ─────────────────────────────────────────────────────────
 _jobs: dict[str, ComfyJob] = {}
@@ -132,6 +136,14 @@ def _launch_setup_background(*setup_args: str):
             comfyui_exe = find_comfyui_install()
             models_dir = find_models_dir()
             log.info("Post-setup: exe=%s, models_dir=%s", comfyui_exe or "NOT FOUND", models_dir or "NOT FOUND")
+            # Re-resolve pack selections so the wizard's choices take effect immediately
+            all_packs = load_all_packs(MODEL_PACKS_DIR)
+            if all_packs:
+                groups = group_packs_by_tool(all_packs)
+                new_packs = resolve_pack_selections(groups, env_reader=_env)
+                for p in new_packs:
+                    _active_packs[p["tool_name"]] = p
+                log.info("Post-setup resolved packs: %s", [p["name"] for p in new_packs])
         except Exception as e:
             log.error("Setup UI failed: %s", e)
         finally:
@@ -198,8 +210,8 @@ def _download_in_background(pack: dict):
 
 # ── Startup ───────────────────────────────────────────────────────────
 
-def startup() -> tuple[list[dict], dict | None, str | None]:
-    """Load model packs, detect ComfyUI, return list of packs to register as tools."""
+def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | None]:
+    """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
     global comfyui_url, comfyui_exe, models_dir
 
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
@@ -219,21 +231,25 @@ def startup() -> tuple[list[dict], dict | None, str | None]:
     models_dir = find_models_dir()
     log.info("Models dir: %s", models_dir or "NOT FOUND")
 
-    # Load model packs
-    packs = load_all_packs(MODEL_PACKS_DIR)
-    if not packs:
+    # Load model packs and group by tool_name
+    all_packs = load_all_packs(MODEL_PACKS_DIR)
+    if not all_packs:
         log.error("No model packs found in %s", MODEL_PACKS_DIR)
+    groups = group_packs_by_tool(all_packs)
+    for tool_name, group in groups.items():
+        if len(group) > 1:
+            log.info("Tool '%s' has %d packs: %s", tool_name, len(group), [p["name"] for p in group])
 
     # First-run or ComfyUI-missing setup
     from server.config import load_local_config
     local_cfg = load_local_config()
-    if not local_cfg.get("setup_complete"):
+    if local_cfg.get("setup_version") != EXTENSION_VERSION:
         if is_http_mode():
             # HTTP mode: run setup UI in-process (blocking, tkinter on main thread)
             from server.ui import run_first_time_setup
             need_comfyui = comfyui_exe is None
             log.info("First run detected — launching setup wizard (blocking, in-process)...")
-            run_first_time_setup(models_dir or "", packs, need_comfyui, in_process=True)
+            run_first_time_setup(models_dir or "", all_packs, groups, need_comfyui, in_process=True)
             comfyui_exe = find_comfyui_install()
             models_dir = find_models_dir()
             if comfyui_exe is None:
@@ -256,6 +272,16 @@ def startup() -> tuple[list[dict], dict | None, str | None]:
         else:
             log.info("ComfyUI not found — launching detection UI in background...")
             _launch_setup_background("--comfyui")
+
+    # Resolve one pack per tool_name group based on user config
+    packs = resolve_pack_selections(groups, env_reader=_env)
+    log.info("Resolved packs: %s", [p["name"] for p in packs])
+
+    # For multi-pack groups, use group_tool_description if available
+    for pack in packs:
+        tool_name = pack["tool_name"]
+        if len(groups.get(tool_name, [])) > 1 and pack.get("group_tool_description"):
+            pack["tool_description"] = pack["group_tool_description"]
 
     # Apply per-pack customizations
     for pack in packs:
@@ -314,7 +340,7 @@ def startup() -> tuple[list[dict], dict | None, str | None]:
         else:
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])
 
-    return packs, custom_pack, custom_workflow_error
+    return packs, groups, custom_pack, custom_workflow_error
 
 
 # ── Tool registration ─────────────────────────────────────────────────
@@ -387,11 +413,12 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         return await wait_for_job(_jobs[request_token])
 
     # Per-pack tools
-    def _make_handler(pack: dict):
+    def _make_handler(tool_name: str):
         async def handler(prompt: str, aspect_ratio: str = "square") -> CallToolResult:
             global comfyui_process, comfyui_url
 
-            log.info("%s called, aspect=%s, prompt=%r", pack["tool_name"], aspect_ratio, prompt[:100])
+            pack = _active_packs[tool_name]
+            log.info("%s called (pack=%s), aspect=%s, prompt=%r", tool_name, pack["name"], aspect_ratio, prompt[:100])
 
             if setup_running:
                 log.warning("Setup still running, rejecting request")
@@ -479,7 +506,8 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         return handler
 
     for pack in packs:
-        mcp.tool(name=pack["tool_name"], description=pack["tool_description"])(_make_handler(pack))
+        _active_packs[pack["tool_name"]] = pack
+        mcp.tool(name=pack["tool_name"], description=pack["tool_description"])(_make_handler(pack["tool_name"]))
 
     total = len(packs) + 2  # packs + custom + fetch_result
     log.info("Registered %d tool(s)", total)
@@ -518,7 +546,7 @@ def main():
                 os.environ[env_key] = val
 
     # Startup: detect ComfyUI, load packs, run first-time setup if needed
-    packs, custom_pack, custom_workflow_error = startup()
+    packs, groups, custom_pack, custom_workflow_error = startup()
 
     # Create FastMCP
     if is_http_mode():

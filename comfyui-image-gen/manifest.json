@@ -19,7 +19,8 @@
         "COMFYUI_EXE": "${user_config.comfyui_exe}",
         "CUSTOM_WORKFLOW": "${user_config.custom_workflow}",
         "CUSTOM_WORKFLOW_PROMPT_NODE": "${user_config.custom_workflow_prompt_node}",
-        "ANIMA_ARTISTS": "${user_config.anima_artists}"
+        "ANIMA_ARTISTS": "${user_config.anima_artists}",
+        "PACK_SELECT_GENERATE_REALISTIC_IMAGE": "${user_config.pack_select_generate_realistic_image}"
       }
     }
   },
@@ -30,7 +31,7 @@
     },
     {
       "name": "generate_realistic_image",
-      "description": "Generate a realistic/general-purpose image using the Flux 2 Klein model via ComfyUI"
+      "description": "Generate a realistic/general-purpose image via ComfyUI"
     },
     {
       "name": "generate_custom_image",
@@ -72,6 +73,13 @@
       "type": "string",
       "title": "Custom Workflow Prompt Node Title (optional)",
       "description": "The title (_meta.title) of the node in your custom workflow where the prompt text should be injected (e.g. 'CLIP Text Encode (Prompt)'). If not set, auto-detection is attempted by tracing the first KSampler's positive input. Restart the extension after changing this.",
+      "required": false
+    },
+    "pack_select_generate_realistic_image": {
+      "type": "string",
+      "title": "Realistic Image Model Pack",
+      "description": "Which model to use for realistic image generation. Options: flux2klein, z_image_turbo. Leave empty to use whichever was picked during setup.",
+      "default": "",
       "required": false
     }
   },
