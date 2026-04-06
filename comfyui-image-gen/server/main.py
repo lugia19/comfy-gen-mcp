@@ -477,9 +477,16 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
                             ))]
                         )
                 else:
-                    log.error("No ComfyUI exe path available, cannot auto-launch")
+                    from server.comfyui import _last_searched_paths
+                    searched = "\n".join(f"  - {p}" for p in _last_searched_paths) if _last_searched_paths else "  (none)"
+                    log.error("No ComfyUI exe path available, cannot auto-launch. Searched:\n%s", searched)
                     return CallToolResult(
-                        content=[TextContent(type="text", text="ComfyUI is not running. Please start ComfyUI Desktop.")]
+                        content=[TextContent(type="text", text=(
+                            "ComfyUI could not be found or launched automatically.\n"
+                            f"Searched:\n{searched}\n\n"
+                            "If ComfyUI is installed in a non-standard location, set the path in "
+                            "Settings > Extensions > Comfy-Gen-MCP > Configure > ComfyUI Executable Path."
+                        ))]
                     )
 
             required = pack.get("required_nodes")

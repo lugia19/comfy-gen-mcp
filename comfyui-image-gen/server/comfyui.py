@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import struct
 import subprocess
 import threading
 import time
@@ -14,15 +15,55 @@ from .config import COMFYUI_CONFIG_PATH, COMFYUI_DEFAULT_EXE, COMFYUI_DEFAULT_UR
 
 log = logging.getLogger("comfy-mcp")
 
+# Paths checked during the last find_comfyui_install() call (for error messages)
+_last_searched_paths: list[str] = []
+
+
+def _sanitize_path(path: str) -> str:
+    """Strip quotes and normalize a file path."""
+    path = path.strip().strip('"').strip("'")
+    return os.path.normpath(path) if path else ""
+
+
+def _resolve_lnk(lnk_path: str) -> str | None:
+    """Parse a Windows .lnk shortcut and return its target path, or None."""
+    try:
+        with open(lnk_path, "rb") as f:
+            content = f.read()
+        # Header is 76 bytes; flags at offset 0x14
+        if len(content) < 76:
+            return None
+        flags = struct.unpack_from("<I", content, 0x14)[0]
+        pos = 76
+        # Skip LinkTargetIDList if present (flag bit 0)
+        if flags & 0x01:
+            id_list_size = struct.unpack_from("<H", content, pos)[0]
+            pos += 2 + id_list_size
+        # Read LinkInfo if present (flag bit 1)
+        if flags & 0x02:
+            link_info_start = pos
+            local_base_path_offset = struct.unpack_from("<I", content, pos + 0x10)[0]
+            if local_base_path_offset:
+                path_start = link_info_start + local_base_path_offset
+                end = content.index(b"\x00", path_start)
+                return content[path_start:end].decode("utf-8", errors="replace")
+    except Exception as e:
+        log.debug("Failed to parse .lnk file %s: %s", lnk_path, e)
+    return None
+
 
 def find_comfyui_install() -> str | None:
     """Return the path to the ComfyUI Desktop executable, or None.
 
-    Priority: COMFYUI_EXE env var (DXT settings) → local_config.json (browse) → default path.
+    Priority: COMFYUI_EXE env var → local_config.json → Start Menu shortcut → default path.
     """
+    global _last_searched_paths
+    _last_searched_paths = []
+
     # 1. DXT user setting (env var) — ignore unsubstituted "${user_config.*}" placeholders
-    env_exe = os.environ.get("COMFYUI_EXE", "").strip()
+    env_exe = _sanitize_path(os.environ.get("COMFYUI_EXE", ""))
     if env_exe and not env_exe.startswith("${"):
+        _last_searched_paths.append(f"DXT setting: {env_exe}")
         if os.path.isfile(env_exe):
             log.info("Found ComfyUI exe from settings: %s", env_exe)
             return env_exe
@@ -31,21 +72,43 @@ def find_comfyui_install() -> str | None:
 
     # 2. Saved custom path from setup UI browse
     local_cfg = load_local_config()
-    saved_exe = local_cfg.get("comfyui_exe", "")
+    saved_exe = _sanitize_path(local_cfg.get("comfyui_exe", ""))
     if saved_exe:
+        _last_searched_paths.append(f"Saved path: {saved_exe}")
         if os.path.isfile(saved_exe):
             log.info("Found ComfyUI exe from local config: %s", saved_exe)
             return saved_exe
         else:
             log.warning("Saved ComfyUI exe no longer exists: %s", saved_exe)
 
-    # 3. Default platform path
+    # 3. Windows Start Menu shortcut
+    if platform.system() == "Windows":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            lnk_path = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "ComfyUI.lnk")
+            if os.path.isfile(lnk_path):
+                target = _resolve_lnk(lnk_path)
+                if target:
+                    target = _sanitize_path(target)
+                    _last_searched_paths.append(f"Start Menu shortcut: {target}")
+                    if os.path.isfile(target):
+                        log.info("Found ComfyUI exe from Start Menu shortcut: %s", target)
+                        # Save for future use so we don't re-parse the .lnk every time
+                        local_cfg["comfyui_exe"] = target
+                        save_local_config(local_cfg)
+                        return target
+                    else:
+                        log.warning("Start Menu shortcut target does not exist: %s", target)
+
+    # 4. Default platform path
+    if COMFYUI_DEFAULT_EXE:
+        _last_searched_paths.append(f"Default path: {COMFYUI_DEFAULT_EXE}")
     log.info("Looking for ComfyUI exe at default: %s", COMFYUI_DEFAULT_EXE)
     if COMFYUI_DEFAULT_EXE and os.path.isfile(COMFYUI_DEFAULT_EXE):
         log.info("Found ComfyUI exe at default path: %s", COMFYUI_DEFAULT_EXE)
         return COMFYUI_DEFAULT_EXE
 
-    log.info("ComfyUI exe not found")
+    log.info("ComfyUI exe not found. Searched: %s", _last_searched_paths)
     return None
 
 def find_models_dir() -> str | None:
