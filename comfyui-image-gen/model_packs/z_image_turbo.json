@@ -1,11 +1,11 @@
 {
   "name": "z_image_turbo",
   "display_name": "Z-Image Turbo",
-  "description": "Ultra-fast turbo image generation model (8GB+ VRAM required)",
+  "description": "High quality turbo image generation model (8GB+ VRAM required)",
   "tool_name": "generate_realistic_image",
   "is_default": true,
   "group_tool_description": "This tool generates realistic/general-purpose images via ComfyUI.\nUse natural language to describe the image you want. Be specific about composition, lighting, style, and subject.\n\nExamples:\n- A photorealistic portrait of an elderly man with weathered skin, dramatic side lighting\n- A cozy coffee shop interior with warm morning light streaming through windows, watercolor style\n- A futuristic cityscape at sunset with flying vehicles, cinematic wide shot\n\nNote: The first generation after launching ComfyUI may take 1-2 minutes while the model loads into GPU memory. If the request times out, please retry.\n\nThe aspect_ratio parameter controls image shape: square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square.",
-  "tool_description": "This tool generates images using the Z-Image Turbo model via ComfyUI.\nZ-Image Turbo is an ultra-fast image generation model optimized for speed.\nUse natural language to describe the image you want. Be specific about composition, lighting, style, and subject.\n\nExamples:\n- A photorealistic portrait of an elderly man with weathered skin, dramatic side lighting\n- A cozy coffee shop interior with warm morning light streaming through windows, watercolor style\n- A futuristic cityscape at sunset with flying vehicles, cinematic wide shot\n\nNote: The first generation after launching ComfyUI may take 1-2 minutes while the model loads into GPU memory. If the request times out, please retry.\n\nThe aspect_ratio parameter controls image shape: square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square.",
+  "tool_description": "This tool generates images using the Z-Image Turbo model via ComfyUI.\nZ-Image Turbo is a fast, high quality image generation model optimized for speed.\nUse natural language to describe the image you want. Be specific about composition, lighting, style, and subject.\n\nExamples:\n- A photorealistic portrait of an elderly man with weathered skin, dramatic side lighting\n- A cozy coffee shop interior with warm morning light streaming through windows, watercolor style\n- A futuristic cityscape at sunset with flying vehicles, cinematic wide shot\n\nNote: The first generation after launching ComfyUI may take 1-2 minutes while the model loads into GPU memory. If the request times out, please retry.\n\nThe aspect_ratio parameter controls image shape: square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square.",
   "models": [
     {
       "filename": "z-image-turbo-Q5_K_M.gguf",
@@ -38,60 +38,142 @@
         "sampler_name": "euler",
         "scheduler": "simple",
         "denoise": 1,
-        "model": ["29", 0],
-        "positive": ["6", 0],
-        "negative": ["7", 0],
-        "latent_image": ["13", 0]
+        "model": [
+          "29",
+          0
+        ],
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "7",
+          0
+        ],
+        "latent_image": [
+          "13",
+          0
+        ]
       },
       "class_type": "KSampler",
-      "_meta": { "title": "KSampler" }
+      "_meta": {
+        "title": "KSampler"
+      }
     },
     "6": {
-      "inputs": { "text": "", "clip": ["30", 0] },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "30",
+          0
+        ]
+      },
       "class_type": "CLIPTextEncode",
-      "_meta": { "title": "CLIP Text Encode (Positive Prompt)" }
+      "_meta": {
+        "title": "CLIP Text Encode (Positive Prompt)"
+      }
     },
     "7": {
-      "inputs": { "text": "blurry ugly bad", "clip": ["30", 0] },
+      "inputs": {
+        "text": "blurry ugly bad",
+        "clip": [
+          "30",
+          0
+        ]
+      },
       "class_type": "CLIPTextEncode",
-      "_meta": { "title": "CLIP Text Encode (Negative Prompt)" }
+      "_meta": {
+        "title": "CLIP Text Encode (Negative Prompt)"
+      }
     },
     "8": {
-      "inputs": { "samples": ["3", 0], "vae": ["17", 0] },
+      "inputs": {
+        "samples": [
+          "3",
+          0
+        ],
+        "vae": [
+          "17",
+          0
+        ]
+      },
       "class_type": "VAEDecode",
-      "_meta": { "title": "VAE Decode" }
+      "_meta": {
+        "title": "VAE Decode"
+      }
     },
     "13": {
-      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      },
       "class_type": "EmptySD3LatentImage",
-      "_meta": { "title": "EmptySD3LatentImage" }
+      "_meta": {
+        "title": "EmptySD3LatentImage"
+      }
     },
     "17": {
-      "inputs": { "vae_name": "ae.safetensors" },
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      },
       "class_type": "VAELoader",
-      "_meta": { "title": "Load VAE" }
+      "_meta": {
+        "title": "Load VAE"
+      }
     },
     "28": {
-      "inputs": { "images": ["8", 0] },
+      "inputs": {
+        "images": [
+          "8",
+          0
+        ]
+      },
       "class_type": "PreviewImage",
-      "_meta": { "title": "Preview Image" }
+      "_meta": {
+        "title": "Preview Image"
+      }
     },
     "29": {
-      "inputs": { "unet_name": "z-image-turbo-Q5_K_M.gguf" },
+      "inputs": {
+        "unet_name": "z-image-turbo-Q5_K_M.gguf"
+      },
       "class_type": "UnetLoaderGGUF",
-      "_meta": { "title": "Unet Loader (GGUF)" }
+      "_meta": {
+        "title": "Unet Loader (GGUF)"
+      }
     },
     "30": {
-      "inputs": { "clip_name": "Qwen3-4B-Q5_K_M.gguf", "type": "stable_diffusion" },
+      "inputs": {
+        "clip_name": "Qwen3-4B-Q5_K_M.gguf",
+        "type": "stable_diffusion"
+      },
       "class_type": "CLIPLoaderGGUF",
-      "_meta": { "title": "CLIPLoader (GGUF)" }
+      "_meta": {
+        "title": "CLIPLoader (GGUF)"
+      }
     }
   },
   "prompt_node_id": "6",
-  "seed_nodes": [{"node_id": "3", "field": "seed"}],
+  "seed_nodes": [
+    {
+      "node_id": "3",
+      "field": "seed"
+    }
+  ],
   "dimension_nodes": {
-    "width": [{"node_id": "13", "field": "width"}],
-    "height": [{"node_id": "13", "field": "height"}]
+    "width": [
+      {
+        "node_id": "13",
+        "field": "width"
+      }
+    ],
+    "height": [
+      {
+        "node_id": "13",
+        "field": "height"
+      }
+    ]
   },
   "max_pixels": 1048576,
   "required_nodes": {

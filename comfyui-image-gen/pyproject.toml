@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-image-gen"
-version = "1.0.0"
+version = "1.0.1"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0",
