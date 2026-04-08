@@ -38,6 +38,10 @@
       "description": "Generate an image using a user-provided custom ComfyUI workflow"
     },
     {
+      "name": "edit_image",
+      "description": "Edit an image using a text prompt and a local file path"
+    },
+    {
       "name": "fetch_result",
       "description": "Fetch the result of an image generation that is still in progress"
     }

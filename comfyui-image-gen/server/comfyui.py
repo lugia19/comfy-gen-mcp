@@ -295,3 +295,18 @@ def launch_comfyui(exe_path: str, custom_url: str | None = None) -> tuple[subpro
     log.error("ComfyUI failed to start within 120 seconds, killing process")
     proc.kill()
     raise TimeoutError("ComfyUI did not start within 120 seconds.")
+
+
+def upload_image(comfyui_url: str, file_path: str) -> str:
+    """Upload a local image to ComfyUI's input directory. Returns the uploaded filename."""
+    log.info("Uploading image to ComfyUI: %s", file_path)
+    with open(file_path, "rb") as f:
+        resp = httpx.post(
+            f"{comfyui_url}/upload/image",
+            files={"image": (os.path.basename(file_path), f)},
+            timeout=30,
+        )
+    resp.raise_for_status()
+    name = resp.json()["name"]
+    log.info("Uploaded as: %s", name)
+    return name

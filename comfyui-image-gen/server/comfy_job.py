@@ -34,6 +34,8 @@ class ComfyJob:
         self.prompt_id: str | None = None
         self.progress: tuple[int, int] | None = None  # (current_step, total_steps)
         self.result: bytes | None = None
+        self.output_filename: str | None = None  # ComfyUI saved filename
+        self.output_subfolder: str = ""  # ComfyUI saved subfolder
         self.error: str | None = None
         self.started = time.time()
 
@@ -141,11 +143,13 @@ class ComfyJob:
                 if "images" in node_output:
                     img = node_output["images"][0]
                     log.info("Fetching image: %s", img["filename"])
+                    self.output_filename = img["filename"]
+                    self.output_subfolder = img.get("subfolder", "")
                     img_resp = httpx.get(
                         f"{self.comfyui_url}/view",
                         params={
                             "filename": img["filename"],
-                            "subfolder": img.get("subfolder", ""),
+                            "subfolder": self.output_subfolder,
                             "type": img.get("type", "output"),
                         },
                         timeout=30,
@@ -246,7 +250,7 @@ class ComfyJob:
             log.info("Cleaned up stale job %s", t)
 
 
-async def wait_for_job(job: ComfyJob) -> 'CallToolResult':
+async def wait_for_job(job: ComfyJob, output_dir: str | None = None) -> 'CallToolResult':
     """Poll a job for up to RESPONSE_TIMEOUT seconds. Return image or token for retry."""
     from mcp.types import CallToolResult, ImageContent, TextContent
 
@@ -254,9 +258,12 @@ async def wait_for_job(job: ComfyJob) -> 'CallToolResult':
     while time.time() - start < RESPONSE_TIMEOUT:
         if job.status == "done":
             b64 = ComfyJob.process_image(job.result)
-            return CallToolResult(
-                content=[ImageContent(type="image", data=b64, mimeType="image/jpeg")]
-            )
+            content = [ImageContent(type="image", data=b64, mimeType="image/jpeg")]
+            if output_dir and job.output_filename:
+                import os
+                full_path = os.path.join(output_dir, job.output_subfolder, job.output_filename)
+                content.append(TextContent(type="text", text=f"saved_path: {full_path}"))
+            return CallToolResult(content=content)
         if job.status == "error":
             return CallToolResult(
                 content=[TextContent(type="text", text=(

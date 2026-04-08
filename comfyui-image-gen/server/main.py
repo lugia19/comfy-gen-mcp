@@ -7,6 +7,7 @@ Supports two modes:
 """
 
 import argparse
+import json
 import logging
 import os
 import secrets
@@ -33,6 +34,7 @@ from server.comfyui import (
     find_comfyui_url,
     find_models_dir,
     launch_comfyui,
+    upload_image,
 )
 from server.config import COMFYUI_DEFAULT_URL, EXTENSION_VERSION, MODEL_PACKS_DIR, _EXT_DIR, is_http_mode
 from server.comfy_job import ComfyJob, wait_for_job
@@ -80,6 +82,35 @@ _active_packs: dict[str, dict] = {}
 
 # ── Job queue ─────────────────────────────────────────────────────────
 _jobs: dict[str, ComfyJob] = {}
+
+
+def _get_output_dir() -> str | None:
+    """Derive ComfyUI's output directory from the models directory."""
+    if models_dir:
+        return os.path.join(os.path.dirname(models_dir), "output")
+    return None
+
+
+def _resolve_image_path(path_or_url: str) -> tuple[str, bool]:
+    """If path_or_url is a URL, download to a temp file. Returns (local_path, is_temp)."""
+    if path_or_url.startswith(("http://", "https://")):
+        import tempfile
+        import httpx as _httpx
+        resp = _httpx.get(path_or_url, timeout=60, follow_redirects=True)
+        resp.raise_for_status()
+        # Guess extension from content-type
+        ct = resp.headers.get("content-type", "")
+        ext = ".png"
+        if "jpeg" in ct or "jpg" in ct:
+            ext = ".jpg"
+        elif "webp" in ct:
+            ext = ".webp"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+        tmp.write(resp.content)
+        tmp.close()
+        log.info("Downloaded %s -> %s (%d bytes)", path_or_url, tmp.name, len(resp.content))
+        return tmp.name, True
+    return path_or_url, False
 
 
 # ── DXT-mode subprocess helpers (not used in HTTP mode) ───────────────
@@ -394,7 +425,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         job = ComfyJob(prompt, custom_pack, aspect_ratio, comfyui_url)
         job.start()
         _jobs[job.token] = job
-        return await wait_for_job(job)
+        return await wait_for_job(job, _get_output_dir())
 
     # Fetch result tool
     @mcp.tool(
@@ -410,7 +441,169 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             return CallToolResult(
                 content=[TextContent(type="text", text=f"Unknown or expired request token: {request_token}")]
             )
-        return await wait_for_job(_jobs[request_token])
+        return await wait_for_job(_jobs[request_token], _get_output_dir())
+
+    # Edit image tool
+    _edit_pack_path = os.path.join(MODEL_PACKS_DIR, "flux2klein_edit.json")
+    _edit_pack = None
+    if os.path.isfile(_edit_pack_path):
+        with open(_edit_pack_path, encoding="utf-8") as f:
+            _edit_pack = json.load(f)
+            _edit_pack["_source_path"] = os.path.abspath(_edit_pack_path)
+
+    @mcp.tool(
+        name="edit_image",
+        description=(
+            "Edit an image using a text prompt. "
+            "image_path can be a local file path (e.g. C:/Users/me/photo.png) or a publicly accessible URL. "
+            "Previously generated images return their saved_path — use that.\n\n"
+            "If the user uploads an image to the chat to be edited, ask them to provide either "
+            "the file path on their local machine or a public URL to the image instead, "
+            "as uploaded chat images cannot be accessed directly. The URL must not require login to access. "
+            "Suggest https://litterbox.catbox.moe/ as a free temporary file host if they need one.\n\n"
+            "Optionally provide second_image_path to reference a second image. "
+            "When using two images, refer to them as 'image1' and 'image2' in the prompt.\n\n"
+            "IMPORTANT: The generated image may not appear inline in the conversation, but it IS sent to the user. "
+            "Do not assume the generation failed just because you cannot see the image.\n\n"
+            "Prompting tips:\n"
+            "- Be precise and verbatim when describing desired changes (e.g. 'change the text to say \"Hello World\"')\n"
+            "- For targeted edits, say 'change nothing else' and mention what should stay the same\n"
+            "- Describe what you want the result to look like, not the editing operation"
+        ),
+    )
+    async def edit_image(prompt: str, image_path: str, second_image_path: str = "") -> CallToolResult:
+        global comfyui_process, comfyui_url
+
+        # Resolve URLs to local temp files
+        temp_files = []
+        try:
+            image_path, is_temp = _resolve_image_path(image_path)
+            if is_temp:
+                temp_files.append(image_path)
+            if second_image_path:
+                second_image_path, is_temp = _resolve_image_path(second_image_path)
+                if is_temp:
+                    temp_files.append(second_image_path)
+        except Exception as e:
+            for f in temp_files:
+                try: os.remove(f)
+                except OSError: pass
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Failed to download image: {e}")]
+            )
+
+        if not os.path.isfile(image_path):
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"File not found: {image_path}")]
+            )
+        if second_image_path and not os.path.isfile(second_image_path):
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"File not found: {second_image_path}")]
+            )
+
+        if _edit_pack is None:
+            return CallToolResult(
+                content=[TextContent(type="text", text="Image editing is not available (edit pack not found).")]
+            )
+
+        use_multi = bool(second_image_path)
+        log.info("edit_image called, multi=%s, path=%s, prompt=%r", use_multi, image_path, prompt[:100])
+
+        if not models_dir:
+            return CallToolResult(
+                content=[TextContent(type="text", text=(
+                    "Cannot find ComfyUI's models directory. "
+                    "Please open ComfyUI Desktop and complete its initial setup first, then try again."
+                ))]
+            )
+
+        if not check_models_present(models_dir, _edit_pack):
+            pack_name = _edit_pack["display_name"]
+            if _downloading.get(_edit_pack["name"]):
+                log.info("Download already in progress for %s", pack_name)
+            else:
+                log.info("Models missing for %s, launching download...", pack_name)
+                _download_in_background(_edit_pack)
+            return CallToolResult(
+                content=[TextContent(type="text", text=(
+                    f"Models for {pack_name} are being downloaded. "
+                    "A download progress window should be open — check your taskbar. "
+                    "Please try again once the download completes."
+                ))]
+            )
+
+        found_url = find_comfyui_url(comfyui_url)
+        if found_url:
+            comfyui_url = found_url
+        else:
+            if comfyui_exe:
+                try:
+                    comfyui_process, comfyui_url = launch_comfyui(comfyui_exe, comfyui_url)
+                except TimeoutError as e:
+                    return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
+            else:
+                return CallToolResult(
+                    content=[TextContent(type="text", text="ComfyUI is not running. Please start ComfyUI Desktop.")]
+                )
+
+        required = _edit_pack.get("required_nodes")
+        if required:
+            missing = check_required_nodes(comfyui_url, required)
+            if missing:
+                names = ", ".join(missing)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=(
+                        f"This model requires the following ComfyUI custom node(s): {names}. "
+                        f"Please open ComfyUI at {comfyui_url} and install them via Extensions."
+                    ))]
+                )
+
+        # Upload image(s) to ComfyUI
+        try:
+            uploaded_name1 = upload_image(comfyui_url, image_path)
+            uploaded_name2 = upload_image(comfyui_url, second_image_path) if use_multi else None
+        except Exception as e:
+            log.error("Failed to upload image: %s", e)
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Failed to upload image to ComfyUI: {e}")]
+            )
+        finally:
+            for f in temp_files:
+                try: os.remove(f)
+                except OSError: pass
+
+        # Pick workflow variant and inject image filenames
+        import copy
+        if use_multi:
+            wf = copy.deepcopy(_edit_pack["workflow_multi"])
+            prompt_node_id = _edit_pack["prompt_node_id_multi"]
+            seed_nodes = _edit_pack["seed_nodes_multi"]
+            image_nodes = _edit_pack["image_nodes_multi"]
+            uploaded_names = [uploaded_name1, uploaded_name2]
+        else:
+            wf = copy.deepcopy(_edit_pack["workflow"])
+            prompt_node_id = _edit_pack["prompt_node_id"]
+            seed_nodes = _edit_pack["seed_nodes"]
+            image_nodes = _edit_pack["image_nodes"]
+            uploaded_names = [uploaded_name1]
+
+        # Inject image filenames into LoadImage nodes
+        for node_id, filename in zip(image_nodes, uploaded_names):
+            wf[node_id]["inputs"]["image"] = filename
+
+        # Build a synthetic pack for ComfyJob — prompt and seeds are injected by build_prompt()
+        edit_job_pack = {
+            "name": _edit_pack["name"],
+            "workflow": wf,
+            "prompt_node_id": prompt_node_id,
+            "seed_nodes": seed_nodes,
+        }
+
+        ComfyJob.cleanup_old(_jobs)
+        job = ComfyJob(prompt, edit_job_pack, "square", comfyui_url)
+        job.start()
+        _jobs[job.token] = job
+        return await wait_for_job(job, _get_output_dir())
 
     # Per-pack tools
     def _make_handler(tool_name: str):
@@ -509,14 +702,14 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
             job.start()
             _jobs[job.token] = job
-            return await wait_for_job(job)
+            return await wait_for_job(job, _get_output_dir())
         return handler
 
     for pack in packs:
         _active_packs[pack["tool_name"]] = pack
         mcp.tool(name=pack["tool_name"], description=pack["tool_description"])(_make_handler(pack["tool_name"]))
 
-    total = len(packs) + 2  # packs + custom + fetch_result
+    total = len(packs) + 3  # packs + custom + edit_image + fetch_result
     log.info("Registered %d tool(s)", total)
 
 
