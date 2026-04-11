@@ -25,6 +25,9 @@ Best for local use with Claude Desktop.
 4. Pick which models to download, configure artist styles, etc.
 5. If you skip a model pack, it'll download automatically when you first try to use it
 
+**Updating to a new version**: Go to your settings, extensions, and uninstall it. Then reinstall it.
+If this doesn't work, go to advanced settings, click on "Open extensions folder", close the Claude Desktop client, and manually delete it. (May need a restart).
+
 ### Option 2: Standalone MCP Server (exe / .app) — Windows & macOS
 
 Best for remote access via claude.ai, or for macOS users (since the MCPB can't display images properly on macOS without the QoL extension, which isn't available on Mac).

@@ -2,7 +2,7 @@
   "dxt_version": "0.4",
   "name": "comfyui-image-gen",
   "display_name": "Comfy-Gen-MCP",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Generate images using AI models via a local ComfyUI instance. Automatically handles model setup. After first install, please restart Claude Desktop.",
   "author": {
     "name": "lugia19"

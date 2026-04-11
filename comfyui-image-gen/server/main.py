@@ -460,6 +460,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             "If the user uploads an image to the chat to be edited, ask them to provide either "
             "the file path on their local machine or a public URL to the image instead, "
             "as uploaded chat images cannot be accessed directly. The URL must not require login to access. "
+            "On Windows, the user can get a file's path by holding Shift, right-clicking the file, and selecting 'Copy as path'. "
             "Suggest https://litterbox.catbox.moe/ as a free temporary file host if they need one.\n\n"
             "Optionally provide second_image_path to reference a second image. "
             "When using two images, refer to them as 'image1' and 'image2' in the prompt.\n\n"
