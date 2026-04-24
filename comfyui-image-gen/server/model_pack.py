@@ -6,7 +6,7 @@ import os
 
 log = logging.getLogger("comfy-mcp")
 
-REQUIRED_FIELDS = ["name", "display_name", "tool_name", "tool_description", "models", "workflow", "prompt_node_id", "seed_nodes", "dimension_nodes"]
+REQUIRED_FIELDS = ["name", "display_name", "tool_name", "tool_description", "models", "workflow", "prompt_node_id", "seed_nodes"]
 
 
 def load_model_pack(path: str) -> dict:
