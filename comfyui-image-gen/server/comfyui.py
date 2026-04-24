@@ -112,12 +112,25 @@ def find_comfyui_install() -> str | None:
     return None
 
 def find_models_dir() -> str | None:
-    """Find the ComfyUI models directory using its config.json (Amendment 1)."""
-    # Primary: read ComfyUI's own config
+    """Find the ComfyUI models directory.
+
+    Priority: explicit path in local_config.json (for portable ComfyUI) →
+    ComfyUI Desktop's own config.json.
+    """
+    # 1. User override — portable installs, or custom location.
+    local_cfg = load_local_config()
+    saved_models_dir = _sanitize_path(local_cfg.get("models_dir", ""))
+    if saved_models_dir:
+        if os.path.isdir(saved_models_dir):
+            log.info("Using models dir from local_config.json: %s", saved_models_dir)
+            return saved_models_dir
+        log.warning("Saved models_dir does not exist: %s", saved_models_dir)
+
+    # 2. Read ComfyUI Desktop's own config
     log.info("Looking for ComfyUI config at: %s", COMFYUI_CONFIG_PATH)
     if COMFYUI_CONFIG_PATH and os.path.isfile(COMFYUI_CONFIG_PATH):
         try:
-            with open(COMFYUI_CONFIG_PATH) as f:
+            with open(COMFYUI_CONFIG_PATH, encoding="utf-8") as f:
                 config = json.load(f)
             base_path = config.get("basePath")
             log.info("ComfyUI config basePath: %s", base_path)
@@ -193,9 +206,19 @@ def _scan_ports(custom_url: str | None = None) -> str | None:
 def find_comfyui_url(custom_url: str | None = None) -> str | None:
     """Find a running ComfyUI instance.
 
-    First checks if the ComfyUI process is running (fast). If not, returns None
-    immediately without scanning ports. If yes, scans ports to find the URL.
+    If a custom URL is configured (different from the default), check it directly —
+    the user has told us where ComfyUI lives, so skip the process-name fast path
+    which only matches ComfyUI Desktop and breaks for portable/standalone installs.
+
+    Otherwise, gate the port scan on a cheap process-name check.
     """
+    if custom_url and custom_url != COMFYUI_DEFAULT_URL:
+        if _check_url(custom_url):
+            log.info("ComfyUI found at custom URL: %s", custom_url)
+            return custom_url
+        log.info("ComfyUI not responding at configured URL: %s", custom_url)
+        return None
+
     if not _is_comfyui_process_running():
         log.info("ComfyUI process not running, skipping port scan")
         return None

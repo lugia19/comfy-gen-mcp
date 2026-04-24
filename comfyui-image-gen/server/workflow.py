@@ -70,8 +70,16 @@ def load_custom_workflow(path: str, prompt_node_title: str | None = None) -> tup
     (case-insensitive) is used as the prompt node.  Otherwise auto-detection is
     attempted via KSampler tracing.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         wf = json.load(f)
+
+    # Detect UI-format export (has top-level "nodes" list) vs API format (dict of node_id -> node dict)
+    if not isinstance(wf, dict) or "nodes" in wf or not all(isinstance(v, dict) for v in wf.values()):
+        raise ValueError(
+            f"Workflow at {path} is not in API format. "
+            f"In ComfyUI, enable dev mode (Settings > Enable Dev mode Options) and use "
+            f"'Save (API Format)' / 'Export (API)' instead of the regular Save."
+        )
 
     # Find all KSamplers (used for seed randomization)
     samplers = []

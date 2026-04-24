@@ -72,17 +72,8 @@ def main():
             sys.exit(1)
         groups = group_packs_by_tool(packs)
 
-        from server.config import COMFYUI_DEFAULT_EXE, load_local_config
-        need_comfyui = True
-        if COMFYUI_DEFAULT_EXE and os.path.isfile(COMFYUI_DEFAULT_EXE):
-            need_comfyui = False
-        else:
-            cfg = load_local_config()
-            if cfg.get("comfyui_exe") and os.path.isfile(cfg.get("comfyui_exe", "")):
-                need_comfyui = False
-
         from server.ui import run_first_time_setup
-        run_first_time_setup(models_dir, packs, groups, need_comfyui)
+        run_first_time_setup(models_dir, packs, groups)
 
     else:
         print(f"Unknown mode: {mode}", file=sys.stderr)

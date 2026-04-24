@@ -157,16 +157,21 @@ def _launch_setup_background(*setup_args: str):
         pass
 
     def _run():
-        global setup_running, comfyui_exe, models_dir
+        global setup_running, comfyui_exe, models_dir, comfyui_url
         try:
             python, cwd = _get_python_and_cwd()
             args = [python, "-m", "server.setup_ui"] + list(setup_args)
             log.info("Setup UI command: %s (cwd=%s)", args, cwd)
             result = subprocess.run(args, cwd=cwd)
             log.info("Setup UI exited with code %d", result.returncode)
+            # Pick up any URL/path the wizard saved (e.g. Option 3 portable setup)
+            from server.config import load_local_config
+            post_cfg = load_local_config()
+            if post_cfg.get("comfyui_url"):
+                comfyui_url = post_cfg["comfyui_url"]
             comfyui_exe = find_comfyui_install()
             models_dir = find_models_dir()
-            log.info("Post-setup: exe=%s, models_dir=%s", comfyui_exe or "NOT FOUND", models_dir or "NOT FOUND")
+            log.info("Post-setup: url=%s, exe=%s, models_dir=%s", comfyui_url, comfyui_exe or "NOT FOUND", models_dir or "NOT FOUND")
             # Re-resolve pack selections so the wizard's choices take effect immediately
             all_packs = load_all_packs(MODEL_PACKS_DIR)
             if all_packs:
@@ -274,30 +279,41 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     # First-run or ComfyUI-missing setup
     from server.config import load_local_config
     local_cfg = load_local_config()
+
+    def _refresh_after_setup():
+        """Re-read globals from local_config.json after a setup UI finishes.
+        Returns True if the user configured portable mode (models_dir + URL)."""
+        global comfyui_url, comfyui_exe, models_dir
+        cfg = load_local_config()
+        if cfg.get("comfyui_url"):
+            comfyui_url = cfg["comfyui_url"]
+        comfyui_exe = find_comfyui_install()
+        models_dir = find_models_dir()
+        return bool(cfg.get("models_dir"))
+
+    is_portable = bool(local_cfg.get("models_dir"))
+
     if local_cfg.get("setup_version") != EXTENSION_VERSION:
         if is_http_mode():
             # HTTP mode: run setup UI in-process (blocking, tkinter on main thread)
             from server.ui import run_first_time_setup
-            need_comfyui = comfyui_exe is None
             log.info("First run detected — launching setup wizard (blocking, in-process)...")
-            run_first_time_setup(models_dir or "", all_packs, groups, need_comfyui, in_process=True)
-            comfyui_exe = find_comfyui_install()
-            models_dir = find_models_dir()
-            if comfyui_exe is None:
+            run_first_time_setup(models_dir or "", all_packs, groups, in_process=True)
+            is_portable = _refresh_after_setup()
+            if comfyui_exe is None and not is_portable:
                 log.error("ComfyUI still not found after setup. Exiting.")
                 sys.exit(1)
         else:
             # DXT mode: background subprocess
             log.info("First run detected — launching setup wizard in background...")
             _launch_setup_background("--first-run", models_dir or "", MODEL_PACKS_DIR)
-    elif comfyui_exe is None:
+    elif comfyui_exe is None and not is_portable:
         if is_http_mode():
             from server.ui import run_comfyui_setup
             log.info("ComfyUI not found — launching detection UI (blocking, in-process)...")
             run_comfyui_setup(in_process=True)
-            comfyui_exe = find_comfyui_install()
-            models_dir = find_models_dir()
-            if comfyui_exe is None:
+            is_portable = _refresh_after_setup()
+            if comfyui_exe is None and not is_portable:
                 log.error("ComfyUI still not found after setup. Exiting.")
                 sys.exit(1)
         else:
@@ -732,8 +748,11 @@ def main():
 
     # In HTTP mode, inject settings from local_config.json into env vars
     if is_http_mode():
-        from server.config import load_local_config
+        from server.config import ensure_user_settings, load_local_config, save_local_config
         local_cfg = load_local_config()
+        if ensure_user_settings(local_cfg):
+            save_local_config(local_cfg)
+            log.info("Seeded missing user settings in local_config.json")
         env_map = {
             "COMFYUI_URL": "comfyui_url",
             "COMFYUI_EXE": "comfyui_exe",

@@ -66,13 +66,14 @@ The standalone server is what you want for remote access. However, the **Claude 
 
 **MCPB (Claude Desktop):** Settings > Extensions > Configure for comfyui-image-gen
 
-**Standalone exe:** Settings are stored in `local_config.json` next to the executable. The first-run wizard handles initial setup.
+**Standalone exe:** Settings are stored in `local_config.json` next to the executable. On first run the file is auto-created with all user-editable keys set to their defaults, so you can open it and edit in place. The first-run wizard handles model downloads.
 
-Available settings:
-- **Anima Artist Styles** — comma-separated list of @artist tags (browse styles at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
-- **ComfyUI URL** — default `http://127.0.0.1:8000`, change if your ComfyUI is on a different port
-- **ComfyUI Executable Path** — only needed if ComfyUI is installed in a non-default location
-- **Custom Workflow** — path to a ComfyUI workflow exported in API format (.json)
+Available settings (JSON keys in `local_config.json`):
+- `anima_artists` — comma-separated list of @artist tags (browse styles at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
+- `comfyui_url` — default `http://127.0.0.1:8000`. **Change this if you use portable/standalone ComfyUI** or run on a non-default port — include the full URL with scheme and port (e.g. `http://127.0.0.1:8188`).
+- `comfyui_exe` — only needed for auto-launch of ComfyUI Desktop in a non-default install path. Leave empty for portable installs you start yourself.
+- `custom_workflow` — path to a ComfyUI workflow exported in API format (.json)
+- `custom_workflow_prompt_node` — title of the node in your custom workflow that receives the prompt text (auto-detected if empty)
 
 ## Troubleshooting
 
