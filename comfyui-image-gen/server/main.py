@@ -16,12 +16,7 @@ import sys
 import threading
 import time
 
-# Ensure the extension root is on sys.path so `from server.xxx` imports work
-# whether this file is run as a script (uv), as a module, or as a frozen exe.
-if getattr(sys, "frozen", False):
-    _ext_dir = sys._MEIPASS
-else:
-    _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 
@@ -52,8 +47,7 @@ _log_fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
 _stderr_handler = logging.StreamHandler(sys.stderr)
 _stderr_handler.setFormatter(_log_fmt)
 
-# Log file goes next to the exe (writable), not in _MEIPASS (temp/read-only).
-_log_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else _ext_dir
+_log_dir = _ext_dir
 _log_file = os.path.join(_log_dir, "server.log")
 _file_handler = logging.FileHandler(_log_file, encoding="utf-8")
 _file_handler.setFormatter(_log_fmt)
@@ -162,10 +156,7 @@ def _resolve_image_path(path_or_url: str) -> tuple[str, bool]:
 
 def _get_python_and_cwd() -> tuple[str, str]:
     """Get Python executable and cwd for setup_ui subprocesses (DXT mode only)."""
-    if getattr(sys, "frozen", False):
-        return "python", sys._MEIPASS
-    else:
-        return sys.executable, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return sys.executable, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 _SETUP_LOCKFILE = os.path.join(_EXT_DIR, ".setup_running.lock")
@@ -760,18 +751,11 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
 # ── Main ──────────────────────────────────────────────────────────────
 
 def main():
-    # Parse args (frozen exe skips argparse — always HTTP mode)
-    if getattr(sys, "frozen", False):
-        class _Args:
-            port = 9247
-            tunnel = None
-        args = _Args()
-    else:
-        parser = argparse.ArgumentParser(description="Comfy-Gen-MCP Server")
-        parser.add_argument("--http", action="store_true", help="Run as HTTP connector instead of stdio (DXT)")
-        parser.add_argument("-p", "--port", type=int, default=9247, help="HTTP server port (default: 9247)")
-        parser.add_argument("-t", "--tunnel", nargs="?", const="temp", help="Start a cloudflare tunnel (HTTP mode only)")
-        args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Comfy-Gen-MCP Server")
+    parser.add_argument("--http", action="store_true", help="Run as HTTP connector instead of stdio (DXT)")
+    parser.add_argument("-p", "--port", type=int, default=9247, help="HTTP server port (default: 9247)")
+    parser.add_argument("-t", "--tunnel", nargs="?", const="temp", help="Start a cloudflare tunnel (HTTP mode only)")
+    args = parser.parse_args()
 
     # In HTTP mode, inject settings from local_config.json into env vars
     if is_http_mode():

@@ -11,15 +11,8 @@ COMFYUI_DEFAULT_PORT = 8188
 MAX_IMAGE_SIZE = 1024
 JPEG_QUALITY = 85
 
-# Extension directory layout
-# PyInstaller frozen mode: bundled data is in sys._MEIPASS, but writable config
-# goes next to the exe (sys.executable's directory).
-if getattr(sys, "frozen", False):
-    _BUNDLE_DIR = sys._MEIPASS  # bundled read-only data (model_packs/)
-    _EXT_DIR = os.path.dirname(sys.executable)  # writable dir for local_config.json
-else:
-    _BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    _EXT_DIR = _BUNDLE_DIR
+_BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_EXT_DIR = _BUNDLE_DIR
 
 MODEL_PACKS_DIR = os.path.join(_BUNDLE_DIR, "model_packs")
 LOCAL_CONFIG_PATH = os.path.join(_EXT_DIR, "local_config.json")
@@ -35,8 +28,8 @@ USER_CONFIG_DEFAULTS = {
 
 
 def is_http_mode() -> bool:
-    """Check if we're running in HTTP connector mode (frozen exe or --http flag)."""
-    return getattr(sys, "frozen", False) or "--http" in sys.argv
+    """Check if we're running in HTTP connector mode (--http flag)."""
+    return "--http" in sys.argv
 
 
 def load_local_config() -> dict:

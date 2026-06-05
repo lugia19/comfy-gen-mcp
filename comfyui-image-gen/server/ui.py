@@ -39,10 +39,7 @@ log = logging.getLogger("comfy-mcp")
 
 def _get_icon_path() -> str | None:
     """Get the path to the tray/app icon."""
-    if getattr(sys, "frozen", False):
-        path = os.path.join(sys._MEIPASS, "server", "tray_icon.png")
-    else:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tray_icon.png")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tray_icon.png")
     return path if os.path.isfile(path) else None
 
 
