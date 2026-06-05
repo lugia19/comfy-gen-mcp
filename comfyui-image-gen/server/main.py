@@ -30,10 +30,14 @@ from mcp.types import CallToolResult, TextContent
 
 from server.comfyui import (
     check_required_nodes,
-    find_comfyui_install,
+    clear_object_info_cache,
+    ensure_manager_installed,
+    find_comfy_cli,
     find_comfyui_url,
     find_models_dir,
+    install_custom_nodes,
     launch_comfyui,
+    stop_comfyui,
     upload_image,
 )
 from server.config import COMFYUI_DEFAULT_URL, EXTENSION_VERSION, MODEL_PACKS_DIR, _EXT_DIR, is_http_mode
@@ -67,7 +71,7 @@ def _env(key: str) -> str | None:
 
 # ── Global state ──────────────────────────────────────────────────────
 comfyui_url: str = COMFYUI_DEFAULT_URL
-comfyui_exe: str | None = None
+comfy_cli_path: str | None = None
 comfyui_process: subprocess.Popen | None = None
 models_dir: str | None = None
 
@@ -88,6 +92,47 @@ def _get_output_dir() -> str | None:
     """Derive ComfyUI's output directory from the models directory."""
     if models_dir:
         return os.path.join(os.path.dirname(models_dir), "output")
+    return None
+
+
+def _ensure_nodes(required: dict[str, str]) -> str | None:
+    """Install missing nodes and restart ComfyUI if needed.
+
+    Returns an error message string, or None if all nodes are available.
+    """
+    global comfyui_process, comfyui_url
+
+    missing = check_required_nodes(comfyui_url, required)
+    if not missing:
+        return None
+
+    if not comfy_cli_path:
+        names = ", ".join(missing)
+        return f"This model requires custom node(s): {names}. comfy-cli is not available to install them."
+
+    log.info("Auto-installing missing nodes: %s", missing)
+    failed = install_custom_nodes(comfy_cli_path, missing)
+    if failed:
+        names = ", ".join(failed)
+        return f"Failed to auto-install custom node(s): {names}."
+
+    # Restart ComfyUI so it loads the new nodes
+    log.info("Restarting ComfyUI to load newly installed nodes...")
+    stop_comfyui(comfy_cli_path, comfyui_process)
+    clear_object_info_cache()
+    time.sleep(2)
+    try:
+        comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+    except (TimeoutError, RuntimeError) as e:
+        return f"Nodes installed but ComfyUI failed to restart: {e}"
+
+    # Verify
+    still_missing = check_required_nodes(comfyui_url, required)
+    if still_missing:
+        names = ", ".join(still_missing)
+        return f"Nodes installed and ComfyUI restarted, but still missing: {names}."
+
+    log.info("All required nodes now available after restart")
     return None
 
 
@@ -157,21 +202,20 @@ def _launch_setup_background(*setup_args: str):
         pass
 
     def _run():
-        global setup_running, comfyui_exe, models_dir, comfyui_url
+        global setup_running, models_dir, comfyui_url
         try:
             python, cwd = _get_python_and_cwd()
             args = [python, "-m", "server.setup_ui"] + list(setup_args)
             log.info("Setup UI command: %s (cwd=%s)", args, cwd)
             result = subprocess.run(args, cwd=cwd)
             log.info("Setup UI exited with code %d", result.returncode)
-            # Pick up any URL/path the wizard saved (e.g. Option 3 portable setup)
             from server.config import load_local_config
             post_cfg = load_local_config()
             if post_cfg.get("comfyui_url"):
                 comfyui_url = post_cfg["comfyui_url"]
-            comfyui_exe = find_comfyui_install()
-            models_dir = find_models_dir()
-            log.info("Post-setup: url=%s, exe=%s, models_dir=%s", comfyui_url, comfyui_exe or "NOT FOUND", models_dir or "NOT FOUND")
+            if comfy_cli_path:
+                models_dir = find_models_dir(comfy_cli_path)
+            log.info("Post-setup: url=%s, models_dir=%s", comfyui_url, models_dir or "NOT FOUND")
             # Re-resolve pack selections so the wizard's choices take effect immediately
             all_packs = load_all_packs(MODEL_PACKS_DIR)
             if all_packs:
@@ -248,7 +292,7 @@ def _download_in_background(pack: dict):
 
 def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | None]:
     """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
-    global comfyui_url, comfyui_exe, models_dir
+    global comfyui_url, comfy_cli_path, models_dir
 
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
     custom_workflow = _env("CUSTOM_WORKFLOW")
@@ -261,11 +305,14 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     log.info("CUSTOM_WORKFLOW=%s", custom_workflow or "(none)")
     log.info("ANIMA_ARTISTS=%s", anima_artists or "(default)")
 
-    # Detect ComfyUI
-    comfyui_exe = find_comfyui_install()
-    log.info("ComfyUI exe: %s", comfyui_exe or "NOT FOUND")
-    models_dir = find_models_dir()
-    log.info("Models dir: %s", models_dir or "NOT FOUND")
+    # Detect comfy-cli and ComfyUI
+    comfy_cli_path = find_comfy_cli()
+    log.info("comfy-cli: %s", comfy_cli_path or "NOT FOUND")
+    if comfy_cli_path:
+        models_dir = find_models_dir(comfy_cli_path)
+        log.info("Models dir: %s", models_dir or "NOT FOUND")
+    else:
+        log.warning("comfy-cli not found — ComfyUI management unavailable")
 
     # Load model packs and group by tool_name
     all_packs = load_all_packs(MODEL_PACKS_DIR)
@@ -281,44 +328,26 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     local_cfg = load_local_config()
 
     def _refresh_after_setup():
-        """Re-read globals from local_config.json after a setup UI finishes.
-        Returns True if the user configured portable mode (models_dir + URL)."""
-        global comfyui_url, comfyui_exe, models_dir
+        global comfyui_url, models_dir
         cfg = load_local_config()
         if cfg.get("comfyui_url"):
             comfyui_url = cfg["comfyui_url"]
-        comfyui_exe = find_comfyui_install()
-        models_dir = find_models_dir()
-        return bool(cfg.get("models_dir"))
+        if comfy_cli_path:
+            models_dir = find_models_dir(comfy_cli_path)
 
-    is_portable = bool(local_cfg.get("models_dir"))
-
-    if local_cfg.get("setup_version") != EXTENSION_VERSION:
+    needs_setup = local_cfg.get("setup_version") != EXTENSION_VERSION or not models_dir
+    if needs_setup:
         if is_http_mode():
-            # HTTP mode: run setup UI in-process (blocking, tkinter on main thread)
             from server.ui import run_first_time_setup
-            log.info("First run detected — launching setup wizard (blocking, in-process)...")
-            run_first_time_setup(models_dir or "", all_packs, groups, in_process=True)
-            is_portable = _refresh_after_setup()
-            if comfyui_exe is None and not is_portable:
-                log.error("ComfyUI still not found after setup. Exiting.")
+            log.info("Setup needed — launching wizard (blocking, in-process)...")
+            run_first_time_setup(all_packs, groups, in_process=True)
+            _refresh_after_setup()
+            if not models_dir:
+                log.error("ComfyUI models dir still not found after setup. Exiting.")
                 sys.exit(1)
         else:
-            # DXT mode: background subprocess
-            log.info("First run detected — launching setup wizard in background...")
-            _launch_setup_background("--first-run", models_dir or "", MODEL_PACKS_DIR)
-    elif comfyui_exe is None and not is_portable:
-        if is_http_mode():
-            from server.ui import run_comfyui_setup
-            log.info("ComfyUI not found — launching detection UI (blocking, in-process)...")
-            run_comfyui_setup(in_process=True)
-            is_portable = _refresh_after_setup()
-            if comfyui_exe is None and not is_portable:
-                log.error("ComfyUI still not found after setup. Exiting.")
-                sys.exit(1)
-        else:
-            log.info("ComfyUI not found — launching detection UI in background...")
-            _launch_setup_background("--comfyui")
+            log.info("Setup needed — launching wizard in background...")
+            _launch_setup_background("--first-run", MODEL_PACKS_DIR)
 
     # Resolve one pack per tool_name group based on user config
     packs = resolve_pack_selections(groups, env_reader=_env)
@@ -387,6 +416,26 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
         else:
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])
 
+    # Ensure ComfyUI-Manager is present before launching (needed for `comfy node install`)
+    if comfy_cli_path and not setup_running:
+        ensure_manager_installed(comfy_cli_path)
+
+    # Launch ComfyUI in background so it's ready by the time a tool is called
+    if comfy_cli_path and not setup_running:
+        found_url = find_comfyui_url(comfyui_url)
+        if found_url:
+            comfyui_url = found_url
+            log.info("ComfyUI already running at %s", comfyui_url)
+        else:
+            def _launch_bg():
+                global comfyui_process, comfyui_url
+                try:
+                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+                    log.info("ComfyUI launched at startup: %s", comfyui_url)
+                except (TimeoutError, RuntimeError) as e:
+                    log.warning("Failed to launch ComfyUI at startup: %s (will retry on first request)", e)
+            threading.Thread(target=_launch_bg, daemon=True).start()
+
     return packs, groups, custom_pack, custom_workflow_error
 
 
@@ -427,14 +476,14 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         if found_url:
             comfyui_url = found_url
         else:
-            if comfyui_exe:
+            if comfy_cli_path:
                 try:
-                    comfyui_process, comfyui_url = launch_comfyui(comfyui_exe, comfyui_url)
-                except TimeoutError as e:
+                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+                except (TimeoutError, RuntimeError) as e:
                     return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
             else:
                 return CallToolResult(
-                    content=[TextContent(type="text", text="ComfyUI is not running. Please start ComfyUI Desktop.")]
+                    content=[TextContent(type="text", text="ComfyUI is not running and comfy-cli was not found. Install it with: pip install comfy-cli")]
                 )
 
         ComfyJob.cleanup_old(_jobs)
@@ -530,7 +579,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             return CallToolResult(
                 content=[TextContent(type="text", text=(
                     "Cannot find ComfyUI's models directory. "
-                    "Please open ComfyUI Desktop and complete its initial setup first, then try again."
+                    "Please run the first-time setup to install ComfyUI, then try again."
                 ))]
             )
 
@@ -553,27 +602,21 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         if found_url:
             comfyui_url = found_url
         else:
-            if comfyui_exe:
+            if comfy_cli_path:
                 try:
-                    comfyui_process, comfyui_url = launch_comfyui(comfyui_exe, comfyui_url)
-                except TimeoutError as e:
+                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+                except (TimeoutError, RuntimeError) as e:
                     return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
             else:
                 return CallToolResult(
-                    content=[TextContent(type="text", text="ComfyUI is not running. Please start ComfyUI Desktop.")]
+                    content=[TextContent(type="text", text="ComfyUI is not running and comfy-cli was not found. Install it with: pip install comfy-cli")]
                 )
 
         required = _edit_pack.get("required_nodes")
         if required:
-            missing = check_required_nodes(comfyui_url, required)
-            if missing:
-                names = ", ".join(missing)
-                return CallToolResult(
-                    content=[TextContent(type="text", text=(
-                        f"This model requires the following ComfyUI custom node(s): {names}. "
-                        f"Please open ComfyUI at {comfyui_url} and install them via Extensions."
-                    ))]
-                )
+            node_err = _ensure_nodes(required)
+            if node_err:
+                return CallToolResult(content=[TextContent(type="text", text=node_err)])
 
         # Upload image(s) to ComfyUI
         try:
@@ -646,8 +689,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
                 return CallToolResult(
                     content=[TextContent(type="text", text=(
                         "Cannot find ComfyUI's models directory. "
-                        "Please open ComfyUI Desktop and complete its initial setup first, then try again. "
-                        "ComfyUI needs to run at least once to create its configuration."
+                        "Please run the first-time setup to install ComfyUI, then try again."
                     ))]
                 )
 
@@ -673,47 +715,32 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             if found_url:
                 comfyui_url = found_url
             else:
-                log.info("ComfyUI not found, attempting launch... (comfyui_exe=%s)", comfyui_exe)
-                if comfyui_exe:
+                log.info("ComfyUI not found, attempting launch... (comfy_cli=%s)", comfy_cli_path)
+                if comfy_cli_path:
                     try:
-                        comfyui_process, comfyui_url = launch_comfyui(comfyui_exe, comfyui_url)
-                    except TimeoutError as e:
-                        log.error("ComfyUI launch timed out: %s", e)
+                        comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+                    except (TimeoutError, RuntimeError) as e:
+                        log.error("ComfyUI launch failed: %s", e)
                         return CallToolResult(
                             content=[TextContent(type="text", text=(
                                 f"Error: {e}\n\n"
-                                "If this error persists, try closing ComfyUI from the system tray and retrying. "
-                                "If that doesn't help, restarting your PC can clear ghost ComfyUI instances."
+                                "If this error persists, try stopping any running ComfyUI processes and retrying."
                             ))]
                         )
                 else:
-                    from server.comfyui import _last_searched_paths
-                    searched = "\n".join(f"  - {p}" for p in _last_searched_paths) if _last_searched_paths else "  (none)"
-                    log.error("No ComfyUI exe path available, cannot auto-launch. Searched:\n%s", searched)
+                    log.error("comfy-cli not available, cannot auto-launch")
                     return CallToolResult(
                         content=[TextContent(type="text", text=(
-                            "ComfyUI could not be found or launched automatically.\n"
-                            f"Searched:\n{searched}\n\n"
-                            "If ComfyUI is installed in a non-standard location, set the path in "
-                            "Settings > Extensions > Comfy-Gen-MCP > Configure > ComfyUI Executable Path."
+                            "ComfyUI is not running and comfy-cli was not found to launch it.\n\n"
+                            "Install comfy-cli with: pip install comfy-cli"
                         ))]
                     )
 
             required = pack.get("required_nodes")
             if required:
-                missing = check_required_nodes(comfyui_url, required)
-                if missing:
-                    names = ", ".join(missing)
-                    log.error("Missing custom nodes: %s", names)
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=(
-                            f"This model requires the following ComfyUI custom node(s): {names}. "
-                            f"Please open ComfyUI in your browser at {comfyui_url} , "
-                            "click 'Extensions' in the top right, search for the node name, and click Install. "
-                            "Then click apply, wait for it to work and try again. "
-                            "If it does not work, please close ComfyUI from the system tray."
-                        ))]
-                    )
+                node_err = _ensure_nodes(required)
+                if node_err:
+                    return CallToolResult(content=[TextContent(type="text", text=node_err)])
 
             ComfyJob.cleanup_old(_jobs)
             job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
@@ -755,7 +782,6 @@ def main():
             log.info("Seeded missing user settings in local_config.json")
         env_map = {
             "COMFYUI_URL": "comfyui_url",
-            "COMFYUI_EXE": "comfyui_exe",
             "CUSTOM_WORKFLOW": "custom_workflow",
             "CUSTOM_WORKFLOW_PROMPT_NODE": "custom_workflow_prompt_node",
             "ANIMA_ARTISTS": "anima_artists",
@@ -845,9 +871,8 @@ def main():
         log.info("Window closed, shutting down...")
         if tunnel_proc:
             tunnel_proc.kill()
-        if comfyui_process:
-            log.info("Stopping ComfyUI...")
-            comfyui_process.terminate()
+        if comfy_cli_path:
+            stop_comfyui(comfy_cli_path, comfyui_process)
     else:
         mcp.run(transport="stdio")
 

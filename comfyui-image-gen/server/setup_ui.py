@@ -3,7 +3,7 @@ CLI entry point for setup UI — used as a subprocess by DXT mode.
 
     python -m server.setup_ui --comfyui
     python -m server.setup_ui --download <models_dir> <pack_json>
-    python -m server.setup_ui --first-run <models_dir> <packs_dir>
+    python -m server.setup_ui --first-run <packs_dir>
 
 Imports the actual UI from server.ui (PyQt6).
 """
@@ -29,19 +29,16 @@ logging.basicConfig(
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: setup_ui.py --comfyui | --download <models_dir> <pack_json> | --first-run <models_dir> <packs_dir>", file=sys.stderr)
+        print("Usage: setup_ui.py --comfyui | --download <models_dir> <pack_json> | --first-run <packs_dir>", file=sys.stderr)
         sys.exit(1)
 
     mode = sys.argv[1]
 
     if mode == "--comfyui":
-        from server.config import COMFYUI_DEFAULT_EXE, load_local_config
-        comfyui_ok = COMFYUI_DEFAULT_EXE and os.path.isfile(COMFYUI_DEFAULT_EXE)
-        if not comfyui_ok:
-            cfg = load_local_config()
-            comfyui_ok = bool(cfg.get("comfyui_exe")) and os.path.isfile(cfg.get("comfyui_exe", ""))
-        if comfyui_ok:
-            log.info("ComfyUI already found, exiting.")
+        from server.comfyui import find_comfy_cli, find_models_dir
+        comfy_cli = find_comfy_cli()
+        if comfy_cli and find_models_dir(comfy_cli):
+            log.info("ComfyUI already installed, exiting.")
             sys.exit(0)
         from server.ui import run_comfyui_setup
         run_comfyui_setup()
@@ -59,11 +56,10 @@ def main():
         run_download_ui(models_dir, pack["models"], title)
 
     elif mode == "--first-run":
-        if len(sys.argv) < 4:
-            print("Usage: setup_ui.py --first-run <models_dir> <packs_dir>", file=sys.stderr)
+        if len(sys.argv) < 3:
+            print("Usage: setup_ui.py --first-run <packs_dir>", file=sys.stderr)
             sys.exit(1)
-        models_dir = sys.argv[2]
-        packs_dir = sys.argv[3]
+        packs_dir = sys.argv[2]
 
         from server.model_pack import load_all_packs, group_packs_by_tool
         packs = load_all_packs(packs_dir)
@@ -73,7 +69,7 @@ def main():
         groups = group_packs_by_tool(packs)
 
         from server.ui import run_first_time_setup
-        run_first_time_setup(models_dir, packs, groups)
+        run_first_time_setup(packs, groups)
 
     else:
         print(f"Unknown mode: {mode}", file=sys.stderr)

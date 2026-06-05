@@ -1,6 +1,5 @@
 """PyQt6 UI for Comfy-Gen-MCP — setup wizards, dialogs, and server windows."""
 
-import json
 import logging
 import os
 import platform
@@ -32,7 +31,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from server.config import COMFYUI_DEFAULT_EXE, EXTENSION_VERSION, load_local_config, save_local_config
+from server.config import EXTENSION_VERSION, load_local_config, save_local_config
+from server.comfyui import find_comfy_cli, find_models_dir, install_comfyui, remove_comfyui_dir, _detect_gpu, _default_install_dir
 
 log = logging.getLogger("comfy-mcp")
 
@@ -55,7 +55,7 @@ def _get_app() -> QApplication:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.lugia19.comfyui-image-gen")
 
-        app = QApplication(sys.argv)
+        app = QApplication([sys.argv[0]])
         _apply_dark_theme(app)
 
         # Set application-wide icon
@@ -95,196 +95,184 @@ def _make_hline() -> QFrame:
     return line
 
 
-# ── 1. ComfyUI Detection ─────────────────────────────────────────────
+# ── 1. ComfyUI Installation ──────────────────────────────────────────
 
-def _build_comfyui_options_panel(parent: QWidget, on_desktop_ready, on_portable_ready) -> QTimer:
-    """Build the two-option ComfyUI selection panel inside `parent`.
+def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
+    """Build the ComfyUI auto-install panel inside `parent`.
 
-    on_desktop_ready(): called after Option 1 saves its exe path.
-    on_portable_ready(url, models_dir): called after Option 2 saves URL + models dir.
-
-    Returns a QTimer that auto-fills the Desktop path field when the default install
-    appears; caller is responsible for stopping it when advancing away.
+    on_install_ready(): called after ComfyUI is installed successfully.
     """
     layout = parent.layout() if parent.layout() else QVBoxLayout(parent)
-    existing_cfg = load_local_config()
 
-    # Shared error label at the bottom
+    comfy_cli = find_comfy_cli()
+    detected_gpu = _detect_gpu()
+    gpu_labels = {"nvidia": "NVIDIA (CUDA)", "amd": "AMD (ROCm)", "mac": "Apple Silicon", "cpu": "CPU only"}
+
+    layout.addWidget(QLabel("<b>Install ComfyUI via comfy-cli</b>"))
+
+    # Install directory
+    layout.addWidget(QLabel("Install location:"))
+    dir_row = QHBoxLayout()
+    dir_edit = QLineEdit(_default_install_dir())
+    dir_browse_btn = QPushButton("Browse...")
+    dir_row.addWidget(dir_edit)
+    dir_row.addWidget(dir_browse_btn)
+    layout.addLayout(dir_row)
+
+    def on_browse_dir():
+        path = QFileDialog.getExistingDirectory(parent, "Select install directory")
+        if path:
+            dir_edit.setText(path)
+
+    dir_browse_btn.clicked.connect(on_browse_dir)
+
+    # GPU selection
+    layout.addWidget(QLabel("GPU type:"))
+    gpu_group = QButtonGroup(parent)
+    gpu_radios: dict[str, QRadioButton] = {}
+    for gpu_id, label in gpu_labels.items():
+        rb = QRadioButton(label)
+        if gpu_id == detected_gpu:
+            rb.setChecked(True)
+        gpu_group.addButton(rb)
+        gpu_radios[gpu_id] = rb
+        layout.addWidget(rb)
+
+    # Status / progress
+    status_label = QLabel("")
+    status_label.setWordWrap(True)
+    layout.addWidget(status_label)
+
+    progress = QProgressBar()
+    progress.setRange(0, 0)  # indeterminate
+    progress.setVisible(False)
+    layout.addWidget(progress)
+
     error_label = QLabel("")
     error_label.setStyleSheet("color: #d96b6b;")
     error_label.setWordWrap(True)
-
-    # ═══ Option 1: ComfyUI Desktop ═══════════════════════════════════
-    layout.addWidget(QLabel("<b>Option 1: ComfyUI Desktop</b>"))
-    hint1 = QLabel("The default path is auto-filled if detected. Click Browse to override.")
-    hint1.setStyleSheet("color: gray;")
-    hint1.setWordWrap(True)
-    layout.addWidget(hint1)
-
-    # Pre-fill priority: saved custom path → auto-detected default → empty
-    initial_desktop = existing_cfg.get("comfyui_exe", "") or (
-        COMFYUI_DEFAULT_EXE if COMFYUI_DEFAULT_EXE and os.path.isfile(COMFYUI_DEFAULT_EXE) else ""
-    )
-    opt1_row = QHBoxLayout()
-    opt1_path_edit = QLineEdit(initial_desktop)
-    opt1_path_edit.setPlaceholderText("Path to ComfyUI.exe")
-    opt1_browse_btn = QPushButton("Browse…")
-    opt1_row.addWidget(opt1_path_edit)
-    opt1_row.addWidget(opt1_browse_btn)
-    layout.addLayout(opt1_row)
-    opt1_btn = QPushButton("Use ComfyUI Desktop")
-    layout.addWidget(opt1_btn)
-
-    layout.addWidget(_make_hline())
-
-    # ═══ Option 2: Portable / Standalone ═════════════════════════════
-    layout.addWidget(QLabel("<b>Option 2: Portable / Standalone ComfyUI</b>"))
-    hint2 = QLabel(
-        "Use if you run the portable build or anything other than Desktop. "
-        "Start ComfyUI first, then fill in both fields below."
-    )
-    hint2.setStyleSheet("color: gray;")
-    hint2.setWordWrap(True)
-    layout.addWidget(hint2)
-
-    layout.addWidget(QLabel("ComfyUI URL:"))
-    default_url = existing_cfg.get("comfyui_url") or "http://127.0.0.1:8188"
-    opt2_url_edit = QLineEdit(default_url)
-    layout.addWidget(opt2_url_edit)
-
-    layout.addWidget(QLabel("Models directory (e.g. <comfyui-folder>/models):"))
-    opt2_row = QHBoxLayout()
-    opt2_models_edit = QLineEdit(existing_cfg.get("models_dir", ""))
-    opt2_models_edit.setPlaceholderText("Path to ComfyUI models/ folder")
-    opt2_models_browse = QPushButton("Browse…")
-    opt2_row.addWidget(opt2_models_edit)
-    opt2_row.addWidget(opt2_models_browse)
-    layout.addLayout(opt2_row)
-    opt2_btn = QPushButton("Use portable / standalone")
-    layout.addWidget(opt2_btn)
-
-    layout.addWidget(_make_hline())
-
-    # Footer
-    dl_btn = QPushButton("Don't have ComfyUI? Download Desktop")
-    dl_btn.clicked.connect(lambda: webbrowser.open("https://www.comfy.org/download"))
-    layout.addWidget(dl_btn)
-
     layout.addWidget(error_label)
 
-    # ── Behavior ──
-    def autofill_default_if_empty():
-        """Populate the Desktop path field if it's empty and the default install exists."""
-        if (
-            not opt1_path_edit.text().strip()
-            and COMFYUI_DEFAULT_EXE
-            and os.path.isfile(COMFYUI_DEFAULT_EXE)
-        ):
-            opt1_path_edit.setText(COMFYUI_DEFAULT_EXE)
+    install_btn = QPushButton("Install ComfyUI")
+    layout.addWidget(install_btn)
 
-    def on_opt1_browse():
-        if platform.system() == "Windows":
-            path, _ = QFileDialog.getOpenFileName(parent, "Select ComfyUI executable", "", "ComfyUI (ComfyUI.exe);;All Files (*)")
-        else:
-            path, _ = QFileDialog.getOpenFileName(parent, "Select ComfyUI executable", "", "All Files (*)")
-        if path:
-            opt1_path_edit.setText(path)
+    if not comfy_cli:
+        error_label.setText("comfy-cli not found. It should be installed automatically as a dependency.")
+        install_btn.setEnabled(False)
 
-    def on_opt1_submit():
-        path = opt1_path_edit.text().strip().strip('"').strip("'")
-        if not path or not os.path.isfile(path):
-            error_label.setText(f"File does not exist: {path or '(empty)'}")
+    install_state = {"status": "idle", "error": None}  # idle | running | done | error
+
+    def on_install():
+        import shutil
+        selected_gpu = next((k for k, rb in gpu_radios.items() if rb.isChecked()), detected_gpu)
+        install_dir = dir_edit.text().strip()
+        if not install_dir:
+            error_label.setText("Please specify an install directory.")
             return
-        log.info("User picked ComfyUI Desktop: %s", path)
-        cfg = load_local_config()
-        cfg["comfyui_exe"] = path
-        cfg["models_dir"] = ""  # clear any leftover portable state
-        save_local_config(cfg)
+
+        # If the directory exists and isn't a valid git repo, offer to delete it
+        if os.path.isdir(install_dir) and not os.path.isdir(os.path.join(install_dir, ".git")):
+            reply = QMessageBox.question(
+                parent,
+                "Directory exists",
+                f"The contents of '{install_dir}' will be deleted, and comfyUI installed there. Are you sure?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(install_dir)
+            except Exception as e:
+                error_label.setText(f"Failed to delete directory: {e}")
+                return
+
+        install_btn.setEnabled(False)
+        dir_edit.setEnabled(False)
+        dir_browse_btn.setEnabled(False)
+        progress.setVisible(True)
+        status_label.setText("Installing ComfyUI... this may take several minutes.")
         error_label.setText("")
-        on_desktop_ready()
+        install_state["status"] = "running"
+        install_state["error"] = None
 
-    opt1_browse_btn.clicked.connect(on_opt1_browse)
-    opt1_btn.clicked.connect(on_opt1_submit)
+        def _run():
+            try:
+                install_comfyui(comfy_cli, gpu=selected_gpu, install_dir=install_dir)
+                install_state["status"] = "done"
+            except Exception as e:
+                log.error("Install failed: %s", e)
+                install_state["error"] = str(e)
+                install_state["status"] = "error"
 
-    def on_opt2_browse():
-        path = QFileDialog.getExistingDirectory(parent, "Select ComfyUI models/ directory")
-        if path:
-            opt2_models_edit.setText(path)
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
 
-    def on_opt2_submit():
-        url = opt2_url_edit.text().strip().rstrip("/")
-        path = opt2_models_edit.text().strip().strip('"').strip("'")
-        if not url or not (url.startswith("http://") or url.startswith("https://")):
-            error_label.setText("URL must start with http:// or https://")
-            return
-        if not path or not os.path.isdir(path):
-            error_label.setText(f"Models directory does not exist: {path or '(empty)'}")
-            return
-        log.info("User picked portable: url=%s, models_dir=%s", url, path)
-        cfg = load_local_config()
-        cfg["comfyui_url"] = url
-        cfg["models_dir"] = path
-        cfg["comfyui_exe"] = ""  # portable has no exe to auto-launch
-        save_local_config(cfg)
-        error_label.setText("")
-        on_portable_ready(url, path)
+    def poll_install():
+        if install_state["status"] == "done":
+            poll_timer.stop()
+            progress.setVisible(False)
+            status_label.setText("ComfyUI installed successfully!")
+            log.info("Install complete, advancing UI")
+            QTimer.singleShot(500, on_install_ready)
+        elif install_state["status"] == "error":
+            poll_timer.stop()
+            progress.setVisible(False)
+            status_label.setText("")
+            error_label.setText(f"Installation failed: {install_state['error']}")
+            install_btn.setEnabled(True)
+            dir_edit.setEnabled(True)
+            dir_browse_btn.setEnabled(True)
 
-    opt2_models_browse.clicked.connect(on_opt2_browse)
-    opt2_btn.clicked.connect(on_opt2_submit)
+    poll_timer = QTimer(parent)
+    poll_timer.timeout.connect(poll_install)
+    poll_timer.start(500)
 
-    # Re-check the default install periodically so a post-dialog install populates
-    # the field — but only when the user hasn't typed anything.
-    timer = QTimer(parent)
-    timer.timeout.connect(autofill_default_if_empty)
-    timer.start(5000)
-    return timer
+    install_btn.clicked.connect(on_install)
 
 
 def run_comfyui_setup(in_process: bool = False):
-    """Show ComfyUI detection/install dialog with three explicit options."""
+    """Show ComfyUI installation dialog."""
     log.info("Opening ComfyUI setup UI (in_process=%s)", in_process)
-    _get_app()
+    app = _get_app()
 
     dialog = QDialog()
     dialog.setWindowTitle("Comfy-Gen-MCP — Setup")
-    dialog.setMinimumWidth(560)
+    dialog.setMinimumWidth(520)
 
     layout = QVBoxLayout(dialog)
-    layout.addWidget(QLabel("<h3>ComfyUI was not found — choose how you run it.</h3>"))
-
-    def on_desktop_ready():
-        QTimer.singleShot(300, dialog.accept)
-
-    def on_portable_ready(_url, _models_dir):
-        QTimer.singleShot(300, dialog.accept)
+    layout.addWidget(QLabel("<h3>ComfyUI is not installed.</h3>"))
 
     panel = QWidget()
     panel.setLayout(QVBoxLayout())
-    timer = _build_comfyui_options_panel(panel, on_desktop_ready, on_portable_ready)
+    _build_comfyui_install_panel(panel, lambda: QTimer.singleShot(300, dialog.accept))
     layout.addWidget(panel)
 
-    result = dialog.exec()
-    timer.stop()
-    if result != QDialog.DialogCode.Accepted:
+    if dialog.exec() != QDialog.DialogCode.Accepted:
         log.info("ComfyUI setup cancelled by user")
         sys.exit(0)
 
 
 # ── 2. First-Time Setup Wizard ───────────────────────────────────────
 
-def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, list[dict]], in_process: bool = False):
-    """First-run wizard: ComfyUI setup → pack selection → artist config → download."""
+def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_process: bool = False):
+    """First-run wizard: ComfyUI install → pack selection → artist config → download."""
     log.info("Opening first-time setup (%d packs, %d groups)", len(packs), len(groups))
-    from server.comfyui import find_models_dir
     from server.downloader import DownloadState, download_models
 
     app = _get_app()
-    state = {"models_dir": models_dir}
+    comfy_cli = find_comfy_cli()
+    state = {"models_dir": ""}
+
+    # Pre-check: if ComfyUI is already installed, skip straight to pack selection
+    if comfy_cli:
+        existing_models = find_models_dir(comfy_cli)
+        if existing_models:
+            state["models_dir"] = existing_models
 
     wizard = QDialog()
     wizard.setWindowTitle("Comfy-Gen-MCP — First Time Setup")
     wizard.setMinimumWidth(520)
-    wizard.setMinimumHeight(400)
+    wizard.setMinimumHeight(500)
 
     main_layout = QVBoxLayout(wizard)
     stack = QWidget()
@@ -299,64 +287,28 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
             p.setVisible(i == idx)
         current_page[0] = idx
 
-    # ── Page 0: ComfyUI setup (three options) ──
+    # ── Page 0: ComfyUI install ──
     comfyui_page = QWidget()
     cl = QVBoxLayout(comfyui_page)
     cl.addWidget(QLabel("<h3>ComfyUI Setup</h3>"))
-    intro = QLabel("Pick how you run ComfyUI. You can change this later by editing local_config.json.")
+    intro = QLabel("ComfyUI will be installed automatically via comfy-cli.")
     intro.setWordWrap(True)
     cl.addWidget(intro)
 
-    def _advance_desktop():
-        comfyui_timer.stop()
-        _advance_from_comfyui()
+    def _advance_from_install():
+        if comfy_cli:
+            resolved = find_models_dir(comfy_cli)
+            if resolved:
+                state["models_dir"] = resolved
+        show_page(1)  # pack selection
 
-    def _advance_portable(_url: str, models_dir_path: str):
-        comfyui_timer.stop()
-        state["models_dir"] = models_dir_path
-        show_page(2)
-
-    comfyui_timer = _build_comfyui_options_panel(comfyui_page, _advance_desktop, _advance_portable)
+    _build_comfyui_install_panel(comfyui_page, _advance_from_install)
 
     cl.addStretch()
     stack_layout.addWidget(comfyui_page)
     pages.append(comfyui_page)
 
-    # ── Page 1: "Run ComfyUI first" (if no models_dir) ──
-    run_first_page = QWidget()
-    rfl = QVBoxLayout(run_first_page)
-    rfl.addWidget(QLabel("<h3>ComfyUI needs to be run at least once.</h3>"))
-    rfl.addWidget(QLabel("Please open ComfyUI Desktop, complete its initial setup,\nthen click the button below."))
-    run_first_status = QLabel("")
-    run_first_status.setStyleSheet("color: red;")
-    rfl.addWidget(run_first_status)
-    check_again_btn = QPushButton("I've run ComfyUI — check again")
-
-    def on_check_models_dir():
-        resolved = find_models_dir()
-        if resolved:
-            state["models_dir"] = resolved
-            log.info("Models dir resolved: %s", resolved)
-            show_page(2)  # pack selection
-        else:
-            run_first_status.setText("Models directory still not found. Please run ComfyUI first.")
-
-    check_again_btn.clicked.connect(on_check_models_dir)
-    rfl.addWidget(check_again_btn)
-    rfl.addStretch()
-    stack_layout.addWidget(run_first_page)
-    pages.append(run_first_page)
-
-    def _advance_from_comfyui():
-        comfyui_timer.stop()
-        resolved = find_models_dir()
-        if resolved:
-            state["models_dir"] = resolved
-            show_page(2)  # pack selection
-        else:
-            show_page(1)  # run ComfyUI first
-
-    # ── Page 2: Pack selection ──
+    # ── Page 1: Pack selection ──
     select_page = QWidget()
     sl = QVBoxLayout(select_page)
     sl.addWidget(QLabel("<h3>Select which image models to install:</h3>"))
@@ -452,15 +404,16 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
         save_local_config(cfg)
 
         if not selected:
-            cfg["setup_version"] = EXTENSION_VERSION
-            save_local_config(cfg)
+            if state["models_dir"]:
+                cfg["setup_version"] = EXTENSION_VERSION
+                save_local_config(cfg)
             wizard.accept()
             return
         anima_pack = next((p for p in selected if p.get("default_artist_list")), None)
         if anima_pack:
             artist_entry.setText(anima_pack["default_artist_list"])
             wizard._selected = selected
-            show_page(3)  # artist config
+            show_page(2)  # artist config
         else:
             wizard._selected = selected
             _start_downloads(selected)
@@ -471,7 +424,7 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
     stack_layout.addWidget(select_page)
     pages.append(select_page)
 
-    # ── Page 3: Artist config ──
+    # ── Page 2: Artist config ──
     artist_page = QWidget()
     al = QVBoxLayout(artist_page)
     al.addWidget(QLabel("<h3>Anima Artist Styles</h3>"))
@@ -501,7 +454,7 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
     stack_layout.addWidget(artist_page)
     pages.append(artist_page)
 
-    # ── Page 4: Download ──
+    # ── Page 3: Download ──
     dl_page = QWidget()
     dll = QVBoxLayout(dl_page)
     dl_title = QLabel("<h3>Downloading models...</h3>")
@@ -528,7 +481,7 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
     download_thread_holder = []
 
     def _start_downloads(selected):
-        show_page(4)
+        show_page(3)
         all_models = []
         for pack in selected:
             for m in pack["models"]:
@@ -583,9 +536,10 @@ def run_first_time_setup(models_dir: str, packs: list[dict], groups: dict[str, l
         poll_timer.start(200)
 
     # ── Show initial page ──
-    # Always start on page 0 — the user picks explicitly between the three
-    # ComfyUI options, even if the default install was auto-detected.
-    show_page(0)
+    if state["models_dir"]:
+        show_page(1)  # ComfyUI already installed, skip to pack selection
+    else:
+        show_page(0)  # Need to install ComfyUI first
 
     if wizard.exec() != QDialog.DialogCode.Accepted:
         log.info("First-time setup cancelled by user")
@@ -775,6 +729,33 @@ class ServerWindow(QMainWindow):
             instructions.setWordWrap(True)
             layout.addWidget(instructions)
 
+        # Troubleshooting
+        layout.addWidget(_make_hline())
+        troubleshoot_row = QHBoxLayout()
+        troubleshoot_label = QLabel("Having problems? Try reinstalling ComfyUI.")
+        troubleshoot_label.setStyleSheet("color: gray;")
+        reinstall_btn = QPushButton("Reinstall")
+        reinstall_btn.setFixedWidth(100)
+        reinstall_btn.clicked.connect(self._reinstall_comfyui)
+        open_log_btn = QPushButton("Open Log")
+        open_log_btn.setFixedWidth(100)
+        open_log_btn.clicked.connect(self._open_comfyui_log)
+        troubleshoot_row.addWidget(troubleshoot_label)
+        troubleshoot_row.addWidget(open_log_btn)
+        troubleshoot_row.addWidget(reinstall_btn)
+        layout.addLayout(troubleshoot_row)
+
+        # ComfyUI status indicator
+        layout.addStretch()
+        self._comfyui_status = QLabel("ComfyUI: starting...")
+        self._comfyui_status.setStyleSheet("color: orange;")
+        self._comfyui_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(self._comfyui_status)
+
+        self._comfyui_poll = QTimer(self)
+        self._comfyui_poll.timeout.connect(self._poll_comfyui)
+        self._comfyui_poll.start(3000)
+
         footer = QLabel("Closing this window hides it to the system tray.\nRight-click the tray icon and select Quit to stop the server.")
         footer.setStyleSheet("color: #4CAF50;")
         layout.addWidget(footer)
@@ -838,6 +819,82 @@ class ServerWindow(QMainWindow):
         event.ignore()
         self.hide()
         self._tray.showMessage("Comfy-Gen-MCP", "Server is still running. Right-click tray icon to quit.", QSystemTrayIcon.MessageIcon.Information, 2000)
+
+    def _poll_comfyui(self):
+        from server.comfyui import _check_url
+        from server.config import COMFYUI_DEFAULT_URL
+        if _check_url(COMFYUI_DEFAULT_URL):
+            self._comfyui_status.setText("ComfyUI: ready")
+            self._comfyui_status.setStyleSheet("color: #4CAF50;")
+        else:
+            self._comfyui_status.setText("ComfyUI: starting...")
+            self._comfyui_status.setStyleSheet("color: orange;")
+
+    def _open_comfyui_log(self):
+        """Open the ComfyUI log file in the system's default text editor."""
+        comfy_cli = find_comfy_cli()
+        if comfy_cli:
+            from server.comfyui import _comfy_which, _default_install_dir
+            install_path = _comfy_which(comfy_cli) or _default_install_dir()
+        else:
+            from server.comfyui import _default_install_dir
+            install_path = _default_install_dir()
+
+        log_path = os.path.join(install_path, "comfyui.log")
+        if not os.path.isfile(log_path):
+            QMessageBox.information(self, "No Log", f"Log file not found:\n{log_path}")
+            return
+
+        import subprocess as _sp
+        if platform.system() == "Windows":
+            os.startfile(log_path)
+        elif platform.system() == "Darwin":
+            _sp.Popen(["open", log_path])
+        else:
+            _sp.Popen(["xdg-open", log_path])
+
+    def _reinstall_comfyui(self):
+        """Nuke the ComfyUI installation directory and quit so the user can re-run setup."""
+        comfy_cli = find_comfy_cli()
+        install_path = None
+        if comfy_cli:
+            from server.comfyui import _comfy_which
+            install_path = _comfy_which(comfy_cli)
+
+        if not install_path or not os.path.isdir(install_path):
+            install_path = _default_install_dir()
+
+        if not install_path or not os.path.isdir(install_path):
+            QMessageBox.warning(self, "Error", "Could not find a ComfyUI installation to remove.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Reinstall ComfyUI",
+            f"This will delete the ComfyUI installation at:\n{install_path}\n\n"
+            "Downloaded models will also be removed.\n"
+            "The application will then quit — restart it to run setup again.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if not remove_comfyui_dir(install_path, comfy_cli):
+            QMessageBox.warning(
+                self, "Error",
+                f"Could not fully delete the installation — some files may still be in use.\n\n"
+                f"Path: {install_path}\n\n"
+                f"Please close any programs using this folder, delete it manually, then restart.",
+            )
+            return
+
+        cfg = load_local_config()
+        cfg.pop("setup_version", None)
+        save_local_config(cfg)
+
+        QMessageBox.information(self, "Done", "ComfyUI has been removed. The application will now quit.\nRestart it to run setup again.")
+        self._quitting = True
+        QApplication.quit()
 
     def _show_download_dialog(self, models_dir: str, models, title: str):
         """Slot called on main thread via signal. Shows download UI as a modal dialog."""

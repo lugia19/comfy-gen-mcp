@@ -2,33 +2,14 @@
 
 import json
 import os
-import platform
 import sys
 
-EXTENSION_VERSION = "1.0.2"
-COMFYUI_DEFAULT_URL = "http://127.0.0.1:8000"
+EXTENSION_VERSION = "1.0.3"
+COMFYUI_DEFAULT_URL = "http://127.0.0.1:8188"
+COMFYUI_DEFAULT_PORT = 8188
 
 MAX_IMAGE_SIZE = 1024
 JPEG_QUALITY = 85
-
-# ComfyUI Desktop executable paths per platform
-if platform.system() == "Windows":
-    COMFYUI_DEFAULT_EXE = os.path.join(
-        os.environ.get("LOCALAPPDATA", ""),
-        "Programs", "@comfyorgcomfyui-electron", "ComfyUI.exe",
-    )
-    COMFYUI_CONFIG_PATH = os.path.join(
-        os.environ.get("APPDATA", ""),
-        "ComfyUI", "config.json",
-    )
-elif platform.system() == "Darwin":
-    COMFYUI_DEFAULT_EXE = "/Applications/ComfyUI.app/Contents/MacOS/ComfyUI"
-    COMFYUI_CONFIG_PATH = os.path.expanduser(
-        "~/Library/Application Support/ComfyUI/config.json"
-    )
-else:
-    COMFYUI_DEFAULT_EXE = ""
-    COMFYUI_CONFIG_PATH = ""
 
 # Extension directory layout
 # PyInstaller frozen mode: bundled data is in sys._MEIPASS, but writable config
@@ -47,8 +28,6 @@ LOCAL_CONFIG_PATH = os.path.join(_EXT_DIR, "local_config.json")
 # and edit them. Keep in sync with manifest.json's user_config block.
 USER_CONFIG_DEFAULTS = {
     "comfyui_url": COMFYUI_DEFAULT_URL,
-    "comfyui_exe": "",
-    "models_dir": "",
     "custom_workflow": "",
     "custom_workflow_prompt_node": "",
     "anima_artists": "@cutesexyrobutts, @nyantcha, @bone nigi",

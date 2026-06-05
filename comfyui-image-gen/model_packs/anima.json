@@ -7,11 +7,11 @@
   "default_artist_list": "@cutesexyrobutts, @shuuko \\(s h uuko\\), @nyantcha, @bone nigi",
   "models": [
     {
-      "filename": "anima-preview3-base.safetensors",
+      "filename": "anima-base-v1.0.safetensors",
       "subfolder": "diffusion_models",
-      "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-preview3-base.safetensors",
-      "size_bytes": 4182218360,
-      "sha256": "14fffe8ad5116cd73b9a4696f6a89d7e5f6efdd24b2e4785603aa891a9b2295b"
+      "url": "https://huggingface.co/circlestone-labs/Anima/resolve/main/split_files/diffusion_models/anima-base-v1.0.safetensors",
+      "size_bytes": 4489052392,
+      "sha256": "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e"
     },
     {
       "filename": "qwen_3_06b_base.safetensors",
@@ -58,12 +58,12 @@
       "_meta": { "title": "KSampler" }
     },
     "28": {
-      "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+      "inputs": { "width": 1536, "height": 1536, "batch_size": 1 },
       "class_type": "EmptyLatentImage",
       "_meta": { "title": "Empty Latent Image" }
     },
     "44": {
-      "inputs": { "unet_name": "anima-preview3-base.safetensors", "weight_dtype": "default" },
+      "inputs": { "unet_name": "anima-base-v1.0.safetensors", "weight_dtype": "default" },
       "class_type": "UNETLoader",
       "_meta": { "title": "Load Diffusion Model" }
     },
@@ -89,5 +89,5 @@
     "width": [{"node_id": "28", "field": "width"}],
     "height": [{"node_id": "28", "field": "height"}]
   },
-  "max_pixels": 1048576
+  "max_pixels": 2359296
 }
