@@ -1080,6 +1080,7 @@ class ServerWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
+        self.setMinimumHeight(620)
         self._stale_check = stale_check
 
         # Cross-thread download support
