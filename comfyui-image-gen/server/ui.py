@@ -157,6 +157,46 @@ def _apply_dark_theme(app: QApplication):
     app.setPalette(palette)
 
 
+_splash = None
+
+
+def show_startup_splash(message: str = "Starting Comfy-Gen-MCP…") -> None:
+    """Show a lightweight splash immediately, before the (slow) ComfyUI detection runs.
+
+    Gives the user instant feedback during the cold-start delay. Safe to call more than
+    once. Torn down by close_startup_splash() once a real window appears.
+    """
+    global _splash
+    if _splash is not None:
+        return
+    from PyQt6.QtWidgets import QSplashScreen
+    from PyQt6.QtGui import QPixmap, QFont
+
+    app = _get_app()
+    pix = QPixmap(440, 180)
+    pix.fill(QColor(45, 45, 45))
+    _splash = QSplashScreen(pix)
+    _splash.setFont(QFont("", 11))
+    _splash.showMessage(
+        f"{message}\n\nChecking your ComfyUI setup — this can take a moment on first launch.",
+        Qt.AlignmentFlag.AlignCenter,
+        Qt.GlobalColor.white,
+    )
+    _splash.show()
+    app.processEvents()  # force an immediate paint; the event loop isn't running yet
+
+
+def close_startup_splash() -> None:
+    """Tear down the startup splash if it's showing."""
+    global _splash
+    if _splash is not None:
+        try:
+            _splash.close()
+        except RuntimeError:
+            pass  # already deleted by Qt
+        _splash = None
+
+
 def _make_hline() -> QFrame:
     """Thin horizontal separator for section dividers."""
     line = QFrame()
@@ -805,6 +845,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
     else:
         show_page(0)  # Need to install ComfyUI first
 
+    close_startup_splash()  # real UI is up now
     if wizard.exec() != QDialog.DialogCode.Accepted:
         log.info("First-time setup cancelled by user")
         sys.exit(0)
@@ -1206,6 +1247,7 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
     window = ServerWindow(title="MCP Server Running", stale_check=stale_check, **window_kwargs)
+    close_startup_splash()  # real UI is up now
     window.show()
     if on_ready:
         on_ready(window)

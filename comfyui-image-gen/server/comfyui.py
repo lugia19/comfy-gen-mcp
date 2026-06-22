@@ -16,6 +16,21 @@ log = logging.getLogger("comfy-mcp")
 
 LAUNCH_TIMEOUT = 120
 
+# Detection cache. comfy-cli cold-starts slowly (seconds) and we look up the cli path,
+# the ComfyUI workspace, and the GPU repeatedly during startup + the setup wizard. These
+# don't change within a run except across an install/uninstall, so memoize them and
+# invalidate explicitly via reset_detection_cache().
+_DETECT_CACHE: dict = {}
+
+
+def reset_detection_cache() -> None:
+    """Clear cached comfy-cli / ComfyUI-workspace / GPU detection results.
+
+    Call after installing or removing ComfyUI so the next lookup re-detects.
+    """
+    _DETECT_CACHE.clear()
+    log.debug("Detection cache cleared")
+
 
 def _comfy_env() -> dict[str, str]:
     """Build an environment dict for comfy-cli subprocesses.
@@ -50,7 +65,16 @@ def find_comfy_cli() -> str | None:
     """Find the comfy-cli executable.
 
     Checks PATH first, then the current Python environment's Scripts/bin directory.
+    Result is cached for the process (see reset_detection_cache()).
     """
+    if "comfy_cli" in _DETECT_CACHE:
+        return _DETECT_CACHE["comfy_cli"]
+    result = _find_comfy_cli_uncached()
+    _DETECT_CACHE["comfy_cli"] = result
+    return result
+
+
+def _find_comfy_cli_uncached() -> str | None:
     found = shutil.which("comfy")
     if found:
         log.info("Found comfy-cli on PATH: %s", found)
@@ -72,7 +96,23 @@ def find_comfy_cli() -> str | None:
 # ── ComfyUI installation detection ──────────────────────────────────
 
 def _comfy_which(comfy_cli: str) -> str | None:
-    """Run `comfy which` and return the ComfyUI workspace path, or None."""
+    """Run `comfy which` and return the ComfyUI workspace path, or None.
+
+    Cached per cli path (see reset_detection_cache()) — `comfy which` cold-starts
+    comfy-cli, which is slow on a fresh machine.
+    """
+    key = ("which", comfy_cli)
+    if key in _DETECT_CACHE:
+        return _DETECT_CACHE[key]
+    result = _comfy_which_uncached(comfy_cli)
+    # Cache even a None ("not installed yet") so the repeated lookups during the setup
+    # wizard don't each re-run comfy-cli. install/remove call reset_detection_cache() so a
+    # fresh install is re-detected immediately afterward.
+    _DETECT_CACHE[key] = result
+    return result
+
+
+def _comfy_which_uncached(comfy_cli: str) -> str | None:
     try:
         result = _run_comfy(comfy_cli, "which", timeout=15)
         if result.returncode != 0:
@@ -131,7 +171,15 @@ def find_models_dir(comfy_cli: str) -> str | None:
 # ── ComfyUI installation ────────────────────────────────────────────
 
 def _detect_gpu() -> str:
-    """Detect GPU type. Returns 'nvidia', 'amd', 'mac', or 'cpu'."""
+    """Detect GPU type. Returns 'nvidia', 'amd', 'mac', or 'cpu'. Cached per process."""
+    if "gpu" in _DETECT_CACHE:
+        return _DETECT_CACHE["gpu"]
+    result = _detect_gpu_uncached()
+    _DETECT_CACHE["gpu"] = result
+    return result
+
+
+def _detect_gpu_uncached() -> str:
     if platform.system() == "Darwin":
         return "mac"
 
@@ -207,6 +255,7 @@ def remove_comfyui_dir(directory: str, comfy_cli: str | None = None) -> bool:
         try:
             shutil.rmtree(directory, onerror=_force_remove_readonly)
             log.info("Deleted ComfyUI directory: %s", directory)
+            reset_detection_cache()  # installation state changed
             return True
         except Exception as e:
             log.warning("Delete attempt %d failed: %s", attempt + 1, e)
@@ -269,6 +318,9 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
     except Exception as e:
         log.warning("Failed to set default workspace: %s", e)
 
+    # Workspace now exists and is the default — drop any cached "not installed" results so
+    # the post-install lookups (e.g. find_models_dir) re-detect it.
+    reset_detection_cache()
     return install_path
 
 

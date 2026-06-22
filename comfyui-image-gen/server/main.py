@@ -408,6 +408,15 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
     global comfyui_url, comfy_cli_path, models_dir
 
+    # Show a splash immediately so the user gets feedback during ComfyUI detection (which
+    # cold-starts comfy-cli and can take several seconds on first launch). Closed when the
+    # setup wizard or the server window appears.
+    try:
+        from server.ui import show_startup_splash
+        show_startup_splash()
+    except Exception as e:
+        log.debug("Could not show startup splash: %s", e)
+
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
     custom_workflow = _env("CUSTOM_WORKFLOW")
     custom_workflow_prompt_node_title = _env("CUSTOM_WORKFLOW_PROMPT_NODE")
@@ -775,7 +784,13 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     """Run the HTTP server: optional tunnel, the MCP server thread, then the Qt window on the
     main thread (blocks until quit), then ComfyUI/tunnel cleanup."""
     from server.tunnel import start_cloudflare_tunnel
-    from server.ui import show_tunnel_choice, show_url_window, show_server_running_window, run_with_progress
+    from server.ui import (
+        close_startup_splash, show_tunnel_choice, show_url_window,
+        show_server_running_window, run_with_progress,
+    )
+
+    # Detection/setup is done; close the splash before any tunnel prompt or the window.
+    close_startup_splash()
 
     local_cfg = load_local_config()
 
