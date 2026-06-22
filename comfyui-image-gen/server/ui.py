@@ -7,7 +7,7 @@ import sys
 import threading
 import webbrowser
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, QEventLoop, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QPalette, QColor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -49,6 +49,62 @@ def _format_bytes(n) -> str:
     return f"{n / 1024:.0f} KB"
 
 
+def run_off_main(label: str, fn, *args, delay_ms: int = 250):
+    """Run a potentially-slow blocking call (e.g. a comfy-cli subprocess) without freezing
+    the GUI.
+
+    comfy-cli invocations can take several seconds each, so they must never run directly on
+    the Qt main thread. On the GUI thread this runs ``fn(*args)`` on a worker and pumps a
+    nested event loop, showing a small progress dialog only if the call takes longer than
+    ``delay_ms`` (so cache-warm / fast calls show nothing). Off the GUI thread, or with no
+    QApplication yet, it just calls ``fn`` directly.
+    """
+    app = QApplication.instance()
+    if app is None or QThread.currentThread() != app.thread():
+        return fn(*args)
+
+    state: dict = {}
+    loop = QEventLoop()
+
+    def _worker():
+        try:
+            state["value"] = fn(*args)
+        except Exception as e:  # surface to the caller after the loop unwinds
+            state["error"] = e
+        finally:
+            QTimer.singleShot(0, loop.quit)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    dlg_holder: dict = {}
+
+    def _maybe_show():
+        if "value" in state or "error" in state:
+            return  # already finished — don't flash a dialog
+        dlg = QDialog()
+        dlg.setWindowTitle("Comfy-Gen-MCP")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(320)
+        v = QVBoxLayout(dlg)
+        lbl = QLabel(label)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setWordWrap(True)
+        v.addWidget(lbl)
+        bar = QProgressBar()
+        bar.setRange(0, 0)  # indeterminate
+        v.addWidget(bar)
+        dlg_holder["dlg"] = dlg
+        dlg.show()
+
+    QTimer.singleShot(delay_ms, _maybe_show)
+    loop.exec()
+    if "dlg" in dlg_holder:
+        dlg_holder["dlg"].close()
+    if "error" in state:
+        raise state["error"]
+    return state.get("value")
+
+
 def _open_path(path: str) -> None:
     """Open a file or folder in the OS default handler (file browser / editor)."""
     if platform.system() == "Windows":
@@ -78,7 +134,7 @@ def _open_config_file(parent=None) -> None:
 def _open_loras_folder(parent=None) -> None:
     """Open ComfyUI's models/loras folder in the file browser, creating it if needed."""
     comfy_cli = find_comfy_cli()
-    models_dir = find_models_dir(comfy_cli) if comfy_cli else None
+    models_dir = run_off_main("Locating ComfyUI…", find_models_dir, comfy_cli) if comfy_cli else None
     if not models_dir:
         QMessageBox.information(
             parent, "LoRAs Folder Not Found",
@@ -99,7 +155,7 @@ def _open_comfyui_log(parent=None) -> None:
     comfy_cli = find_comfy_cli()
     if comfy_cli:
         from server.comfyui import _comfy_which, _default_install_dir
-        install_path = _comfy_which(comfy_cli) or _default_install_dir()
+        install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli) or _default_install_dir()
     else:
         from server.comfyui import _default_install_dir
         install_path = _default_install_dir()
@@ -474,7 +530,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         layout.addWidget(d)
 
         comfy_cli = find_comfy_cli()
-        mdir = find_models_dir(comfy_cli) if comfy_cli else None
+        mdir = run_off_main("Locating ComfyUI…", find_models_dir, comfy_cli) if comfy_cli else None
         loras_dir = os.path.join(mdir, "loras") if mdir else None
 
         def list_loras() -> list[str]:
@@ -665,7 +721,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
     # Pre-check: if ComfyUI is already installed, skip straight to pack selection
     if comfy_cli:
-        existing_models = find_models_dir(comfy_cli)
+        existing_models = run_off_main("Detecting ComfyUI…", find_models_dir, comfy_cli)
         if existing_models:
             state["models_dir"] = existing_models
 
@@ -697,7 +753,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
     def _advance_from_install():
         if comfy_cli:
-            resolved = find_models_dir(comfy_cli)
+            resolved = run_off_main("Finishing setup…", find_models_dir, comfy_cli)
             if resolved:
                 state["models_dir"] = resolved
         _rebuild_settings_page()  # refresh so the LoRA file list reflects the new models dir
@@ -1173,7 +1229,7 @@ class ServerWindow(QMainWindow):
         install_path = None
         if comfy_cli:
             from server.comfyui import _comfy_which
-            install_path = _comfy_which(comfy_cli)
+            install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli)
 
         if not install_path or not os.path.isdir(install_path):
             install_path = _default_install_dir()

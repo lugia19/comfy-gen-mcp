@@ -143,8 +143,20 @@ def find_comfyui_installation(comfy_cli: str) -> str | None:
 def find_models_dir(comfy_cli: str) -> str | None:
     """Find the ComfyUI models directory by querying comfy-cli.
 
-    Falls back to checking the default install directory if comfy which points elsewhere.
+    Cached once found (see reset_detection_cache()). Without this, the post-install UI
+    refresh re-runs this on the main thread and each call cold-shells out to comfy-cli
+    (seconds each), freezing the window.
     """
+    if "models_dir" in _DETECT_CACHE:
+        return _DETECT_CACHE["models_dir"]
+    result = _find_models_dir_uncached(comfy_cli)
+    if result is not None:  # don't cache "not installed yet"; install() primes it
+        _DETECT_CACHE["models_dir"] = result
+    return result
+
+
+def _find_models_dir_uncached(comfy_cli: str) -> str | None:
+    """Falls back to checking the default install directory if comfy which points elsewhere."""
     install_path = find_comfyui_installation(comfy_cli)
     if install_path:
         models_dir = os.path.join(install_path, "models")
@@ -318,9 +330,17 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
     except Exception as e:
         log.warning("Failed to set default workspace: %s", e)
 
-    # Workspace now exists and is the default — drop any cached "not installed" results so
-    # the post-install lookups (e.g. find_models_dir) re-detect it.
+    # We just installed it and know exactly where it is. Prime the detection cache with the
+    # known-good path so the wizard's post-install UI refresh (find_models_dir /
+    # find_comfyui_installation, called on the main thread) returns instantly instead of
+    # cold-shelling out to comfy-cli — which is seconds-slow here and, worse, `comfy which`
+    # reports "not found" right after install, sending find_models_dir into a fallback that
+    # re-runs `set-default` on every call and freezes the window.
     reset_detection_cache()
+    _DETECT_CACHE[("which", comfy_cli)] = install_path
+    models = os.path.join(install_path, "models")
+    if os.path.isdir(models):
+        _DETECT_CACHE["models_dir"] = models
     return install_path
 
 
