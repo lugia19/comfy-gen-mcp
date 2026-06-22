@@ -51,8 +51,8 @@ SETTINGS_SCHEMA: list[dict] = [
         "key": "custom_workflow_prompt_node",
         "title": "Custom Workflow Prompt Node Title",
         "description": (
-            "Title (_meta.title) of the node where the prompt text is injected. If empty, "
-            "it's auto-detected from the first KSampler's positive input."
+            "Title (_meta.title) of the node where the prompt text is injected.\n\n"
+            "If empty, it's auto-detected from the first KSampler's positive input."
         ),
         "type": "text",
         "default": "",
