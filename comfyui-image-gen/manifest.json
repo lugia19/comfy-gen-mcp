@@ -3,7 +3,7 @@
   "name": "comfyui-image-gen",
   "display_name": "Comfy-Gen-MCP",
   "version": "1.0.3",
-  "description": "Generate images using AI models via ComfyUI (auto-installed via comfy-cli). Automatically handles model and node setup. After first install, please restart Claude Desktop.",
+  "description": "Generate images using AI models via ComfyUI (auto-installed via comfy-cli). Automatically handles model and node setup.",
   "author": {
     "name": "lugia19"
   },
