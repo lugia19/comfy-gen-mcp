@@ -17,6 +17,16 @@ _EXT_DIR = _BUNDLE_DIR
 MODEL_PACKS_DIR = os.path.join(_BUNDLE_DIR, "model_packs")
 LOCAL_CONFIG_PATH = os.path.join(_EXT_DIR, "local_config.json")
 
+# All app logs we control live here together (server.log + comfyui.log), so the UI can
+# surface them with a single "Open Logs Folder" button. Created on demand via ensure_logs_dir.
+LOGS_DIR = os.path.join(_EXT_DIR, "logs")
+
+
+def ensure_logs_dir() -> str:
+    """Create the logs directory if needed and return its path."""
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    return LOGS_DIR
+
 # Per-pack config containers seeded into local_config.json (not rendered as scalar form
 # fields; the Settings panel builds these from the loaded packs):
 #   pack_loras       {pack_name: [{"name": "myLora.safetensors", "strength": 0.8}]}  (anima only)

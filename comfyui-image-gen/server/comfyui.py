@@ -383,9 +383,9 @@ def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
     log.info("Launching ComfyUI via comfy-cli: port=%d", port)
     args = [comfy_cli, "launch", "--", "--port", str(port)]
 
-    # Log ComfyUI output to a file to avoid pipe deadlocks
-    install_path = _comfy_which(comfy_cli) or _default_install_dir()
-    comfyui_log = os.path.join(install_path, "comfyui.log")
+    # Log ComfyUI output to a file (in our shared logs/ dir) to avoid pipe deadlocks
+    from .config import ensure_logs_dir
+    comfyui_log = os.path.join(ensure_logs_dir(), "comfyui.log")
     log.info("ComfyUI output log: %s", comfyui_log)
     log_fh = open(comfyui_log, "w", encoding="utf-8")
 

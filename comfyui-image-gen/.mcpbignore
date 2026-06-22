@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 local_config.json
 *.log
+logs/

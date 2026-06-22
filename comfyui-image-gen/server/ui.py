@@ -151,20 +151,15 @@ def _open_loras_folder(parent=None) -> None:
     _open_path(loras_dir)
 
 
-def _open_comfyui_log(parent=None) -> None:
-    """Open the ComfyUI log file in the system editor."""
-    comfy_cli = find_comfy_cli()
-    if comfy_cli:
-        from server.comfyui import _comfy_which, _default_install_dir
-        install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli) or _default_install_dir()
-    else:
-        from server.comfyui import _default_install_dir
-        install_path = _default_install_dir()
-    log_path = os.path.join(install_path, "comfyui.log")
-    if not os.path.isfile(log_path):
-        QMessageBox.information(parent, "No Log", f"Log file not found:\n{log_path}")
+def _open_logs_folder(parent=None) -> None:
+    """Open the shared logs folder (server.log + comfyui.log) in the file browser."""
+    from server.config import LOGS_DIR, ensure_logs_dir
+    try:
+        ensure_logs_dir()
+    except OSError as e:
+        QMessageBox.information(parent, "Logs", f"Could not open logs folder:\n{LOGS_DIR}\n\n{e}")
         return
-    _open_path(log_path)
+    _open_path(LOGS_DIR)
 
 
 def _get_icon_path() -> str | None:
@@ -724,11 +719,11 @@ def run_settings_dialog():
     outer.addWidget(_make_hline())
     tools_row = QHBoxLayout()
     open_config_btn = QPushButton("Open Config File")
-    open_log_btn = QPushButton("Open Log")
+    open_logs_btn = QPushButton("Open Logs Folder")
     open_config_btn.clicked.connect(lambda: _open_config_file(dialog))
-    open_log_btn.clicked.connect(lambda: _open_comfyui_log(dialog))
+    open_logs_btn.clicked.connect(lambda: _open_logs_folder(dialog))
     tools_row.addWidget(open_config_btn)
-    tools_row.addWidget(open_log_btn)
+    tools_row.addWidget(open_logs_btn)
     outer.addLayout(tools_row)
 
     notice = QLabel("")
@@ -1138,7 +1133,7 @@ class ServerWindow(QMainWindow):
         layout.addWidget(_make_hline())
 
         settings_row = QHBoxLayout()
-        settings_label = QLabel("Configure models, artist styles, steps, LoRAs, and open config/LoRAs/log.")
+        settings_label = QLabel("Configure models, artist styles, steps, LoRAs, and open the config file / LoRAs / logs.")
         settings_label.setStyleSheet("color: gray;")
         settings_label.setWordWrap(True)
         settings_btn = QPushButton("Settings")

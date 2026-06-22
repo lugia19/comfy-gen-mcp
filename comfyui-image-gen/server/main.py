@@ -39,6 +39,7 @@ from server.config import (
     COMFYUI_DEFAULT_URL,
     EXTENSION_VERSION,
     MODEL_PACKS_DIR,
+    ensure_logs_dir,
     ensure_user_settings,
     is_http_mode,
     load_local_config,
@@ -56,8 +57,7 @@ _log_fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
 _stderr_handler = logging.StreamHandler(sys.stderr)
 _stderr_handler.setFormatter(_log_fmt)
 
-_log_dir = _ext_dir
-_log_file = os.path.join(_log_dir, "server.log")
+_log_file = os.path.join(ensure_logs_dir(), "server.log")
 _file_handler = logging.FileHandler(_log_file, encoding="utf-8")
 _file_handler.setFormatter(_log_fmt)
 
