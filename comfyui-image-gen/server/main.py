@@ -727,6 +727,8 @@ def _build_http_app(args) -> tuple[FastMCP, str]:
     async def _alive(request):
         from starlette.responses import PlainTextResponse
         _keepalive_ts[0] = time.monotonic()
+        client = getattr(request, "client", None)
+        log.info("/alive received (keepalive refreshed _keepalive_ts) from %s", client)
         return PlainTextResponse("ok")
 
     return mcp, mcp_path
@@ -777,19 +779,28 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         global _server_window
         _server_window = w
 
+    if managed:
+        log.info("Managed mode: managed_by shim pid=%s, grace=%ds, initial _keepalive_ts=%.1f, port=%d",
+                 args.managed_by, MANAGED_GRACE_SECONDS, _keepalive_ts[0], args.port)
+
     # In managed mode, the window self-closes when the shim's keepalive goes stale
     # (or the shim process dies) — then the post-window cleanup below stops ComfyUI.
     def _stale() -> bool:
         if not managed:
             return False
+        pid_alive = None
         try:
             import psutil
-            if not psutil.pid_exists(args.managed_by):
+            pid_alive = psutil.pid_exists(args.managed_by)
+            if not pid_alive:
                 log.info("Managing shim (pid %d) is gone — shutting down", args.managed_by)
                 return True
-        except Exception:
-            pass
-        if time.monotonic() - _keepalive_ts[0] > MANAGED_GRACE_SECONDS:
+        except Exception as e:
+            log.info("psutil unavailable, PID check disabled: %s", e)
+        age = time.monotonic() - _keepalive_ts[0]
+        log.info("stale check: keepalive age %.1fs (grace %ds), managed_by=%s alive=%s",
+                 age, MANAGED_GRACE_SECONDS, args.managed_by, pid_alive)
+        if age > MANAGED_GRACE_SECONDS:
             log.info("Shim keepalive stale (>%ds) — shutting down", MANAGED_GRACE_SECONDS)
             return True
         return False
