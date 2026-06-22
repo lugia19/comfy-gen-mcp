@@ -1149,28 +1149,27 @@ class ServerWindow(QMainWindow):
         self._restart_label.setVisible(False)
         layout.addWidget(self._restart_label)
 
-        # Troubleshooting
+        # Troubleshooting — ComfyUI status on the left, reinstall control on the right
         layout.addWidget(_make_hline())
         troubleshoot_row = QHBoxLayout()
+        self._comfyui_status = QLabel("ComfyUI: starting...")
+        self._comfyui_status.setStyleSheet("color: orange;")
         troubleshoot_label = QLabel("Having problems? Try reinstalling ComfyUI.")
         troubleshoot_label.setStyleSheet("color: gray;")
         reinstall_btn = QPushButton("Reinstall")
         reinstall_btn.setFixedWidth(100)
         reinstall_btn.clicked.connect(self._reinstall_comfyui)
+        troubleshoot_row.addWidget(self._comfyui_status)
+        troubleshoot_row.addStretch()
         troubleshoot_row.addWidget(troubleshoot_label)
         troubleshoot_row.addWidget(reinstall_btn)
         layout.addLayout(troubleshoot_row)
 
-        # ComfyUI status indicator
-        layout.addStretch()
-        self._comfyui_status = QLabel("ComfyUI: starting...")
-        self._comfyui_status.setStyleSheet("color: orange;")
-        self._comfyui_status.setAlignment(Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(self._comfyui_status)
-
         self._comfyui_poll = QTimer(self)
         self._comfyui_poll.timeout.connect(self._poll_comfyui)
         self._comfyui_poll.start(3000)
+
+        layout.addStretch()
 
         # Managed mode: self-close when the spawning shim's keepalive goes stale.
         if self._stale_check is not None:
