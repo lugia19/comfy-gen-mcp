@@ -61,6 +61,55 @@ def _open_path(path: str) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
+def _open_config_file(parent=None) -> None:
+    """Open local_config.json in the system editor, seeding it if missing."""
+    from server.config import LOCAL_CONFIG_PATH, ensure_user_settings, load_local_config, save_local_config
+    if not os.path.isfile(LOCAL_CONFIG_PATH):
+        cfg = load_local_config()
+        ensure_user_settings(cfg)
+        try:
+            save_local_config(cfg)
+        except OSError as e:
+            QMessageBox.information(parent, "Config File", f"Could not create config file:\n{LOCAL_CONFIG_PATH}\n\n{e}")
+            return
+    _open_path(LOCAL_CONFIG_PATH)
+
+
+def _open_loras_folder(parent=None) -> None:
+    """Open ComfyUI's models/loras folder in the file browser, creating it if needed."""
+    comfy_cli = find_comfy_cli()
+    models_dir = find_models_dir(comfy_cli) if comfy_cli else None
+    if not models_dir:
+        QMessageBox.information(
+            parent, "LoRAs Folder Not Found",
+            "Could not locate ComfyUI's models directory. Install/launch ComfyUI first."
+        )
+        return
+    loras_dir = os.path.join(models_dir, "loras")
+    try:
+        os.makedirs(loras_dir, exist_ok=True)
+    except OSError as e:
+        QMessageBox.information(parent, "LoRAs Folder", f"Could not open folder:\n{loras_dir}\n\n{e}")
+        return
+    _open_path(loras_dir)
+
+
+def _open_comfyui_log(parent=None) -> None:
+    """Open the ComfyUI log file in the system editor."""
+    comfy_cli = find_comfy_cli()
+    if comfy_cli:
+        from server.comfyui import _comfy_which, _default_install_dir
+        install_path = _comfy_which(comfy_cli) or _default_install_dir()
+    else:
+        from server.comfyui import _default_install_dir
+        install_path = _default_install_dir()
+    log_path = os.path.join(install_path, "comfyui.log")
+    if not os.path.isfile(log_path):
+        QMessageBox.information(parent, "No Log", f"Log file not found:\n{log_path}")
+        return
+    _open_path(log_path)
+
+
 def _get_icon_path() -> str | None:
     """Get the path to the tray/app icon."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tray_icon.png")
@@ -509,6 +558,20 @@ def run_settings_dialog():
     scroll.setWidget(inner)
     outer.addWidget(scroll)
 
+    # Files & logs
+    outer.addWidget(_make_hline())
+    tools_row = QHBoxLayout()
+    open_config_btn = QPushButton("Open Config File")
+    open_loras_btn = QPushButton("Open LoRAs Folder")
+    open_log_btn = QPushButton("Open Log")
+    open_config_btn.clicked.connect(lambda: _open_config_file(dialog))
+    open_loras_btn.clicked.connect(lambda: _open_loras_folder(dialog))
+    open_log_btn.clicked.connect(lambda: _open_comfyui_log(dialog))
+    tools_row.addWidget(open_config_btn)
+    tools_row.addWidget(open_loras_btn)
+    tools_row.addWidget(open_log_btn)
+    outer.addLayout(tools_row)
+
     notice = QLabel("")
     notice.setStyleSheet("color: #4CAF50;")
     notice.setWordWrap(True)
@@ -900,11 +963,11 @@ class ServerWindow(QMainWindow):
             instructions.setWordWrap(True)
             layout.addWidget(instructions)
 
-        # Configuration & models
+        # Configuration
         layout.addWidget(_make_hline())
 
         settings_row = QHBoxLayout()
-        settings_label = QLabel("Configure models, artist styles, steps, LoRAs, and more.")
+        settings_label = QLabel("Configure models, artist styles, steps, LoRAs, and open config/LoRAs/log.")
         settings_label.setStyleSheet("color: gray;")
         settings_label.setWordWrap(True)
         settings_btn = QPushButton("Settings")
@@ -933,29 +996,6 @@ class ServerWindow(QMainWindow):
         self._restart_row.setVisible(False)
         layout.addWidget(self._restart_row)
 
-        # Power-user escape hatches
-        config_row = QHBoxLayout()
-        config_label = QLabel("Or edit local_config.json directly.")
-        config_label.setStyleSheet("color: gray;")
-        config_label.setWordWrap(True)
-        open_config_btn = QPushButton("Open Config File")
-        open_config_btn.setFixedWidth(140)
-        open_config_btn.clicked.connect(self._open_config_file)
-        config_row.addWidget(config_label)
-        config_row.addWidget(open_config_btn)
-        layout.addLayout(config_row)
-
-        loras_row = QHBoxLayout()
-        loras_label = QLabel("Drop custom LoRA .safetensors files here, then add them in Settings.")
-        loras_label.setStyleSheet("color: gray;")
-        loras_label.setWordWrap(True)
-        open_loras_btn = QPushButton("Open LoRAs Folder")
-        open_loras_btn.setFixedWidth(140)
-        open_loras_btn.clicked.connect(self._open_loras_folder)
-        loras_row.addWidget(loras_label)
-        loras_row.addWidget(open_loras_btn)
-        layout.addLayout(loras_row)
-
         # Troubleshooting
         layout.addWidget(_make_hline())
         troubleshoot_row = QHBoxLayout()
@@ -964,11 +1004,7 @@ class ServerWindow(QMainWindow):
         reinstall_btn = QPushButton("Reinstall")
         reinstall_btn.setFixedWidth(100)
         reinstall_btn.clicked.connect(self._reinstall_comfyui)
-        open_log_btn = QPushButton("Open Log")
-        open_log_btn.setFixedWidth(100)
-        open_log_btn.clicked.connect(self._open_comfyui_log)
         troubleshoot_row.addWidget(troubleshoot_label)
-        troubleshoot_row.addWidget(open_log_btn)
         troubleshoot_row.addWidget(reinstall_btn)
         layout.addLayout(troubleshoot_row)
 
@@ -1071,57 +1107,6 @@ class ServerWindow(QMainWindow):
         else:
             self._comfyui_status.setText("ComfyUI: starting...")
             self._comfyui_status.setStyleSheet("color: orange;")
-
-    def _open_comfyui_log(self):
-        """Open the ComfyUI log file in the system's default text editor."""
-        comfy_cli = find_comfy_cli()
-        if comfy_cli:
-            from server.comfyui import _comfy_which, _default_install_dir
-            install_path = _comfy_which(comfy_cli) or _default_install_dir()
-        else:
-            from server.comfyui import _default_install_dir
-            install_path = _default_install_dir()
-
-        log_path = os.path.join(install_path, "comfyui.log")
-        if not os.path.isfile(log_path):
-            QMessageBox.information(self, "No Log", f"Log file not found:\n{log_path}")
-            return
-
-        _open_path(log_path)
-
-    def _open_config_file(self):
-        """Open local_config.json in the system's default editor (seeding it if missing)."""
-        from server.config import LOCAL_CONFIG_PATH, ensure_user_settings, load_local_config, save_local_config
-        if not os.path.isfile(LOCAL_CONFIG_PATH):
-            cfg = load_local_config()
-            ensure_user_settings(cfg)
-            try:
-                save_local_config(cfg)
-            except OSError as e:
-                QMessageBox.information(self, "Config File", f"Could not create config file:\n{LOCAL_CONFIG_PATH}\n\n{e}")
-                return
-
-        _open_path(LOCAL_CONFIG_PATH)
-
-    def _open_loras_folder(self):
-        """Open ComfyUI's models/loras folder in the system file browser (creating it if needed)."""
-        comfy_cli = find_comfy_cli()
-        models_dir = find_models_dir(comfy_cli) if comfy_cli else None
-        if not models_dir:
-            QMessageBox.information(
-                self, "LoRAs Folder Not Found",
-                "Could not locate ComfyUI's models directory. Install/launch ComfyUI first."
-            )
-            return
-
-        loras_dir = os.path.join(models_dir, "loras")
-        try:
-            os.makedirs(loras_dir, exist_ok=True)
-        except OSError as e:
-            QMessageBox.information(self, "LoRAs Folder", f"Could not open folder:\n{loras_dir}\n\n{e}")
-            return
-
-        _open_path(loras_dir)
 
     def _open_settings(self):
         """Open the Settings dialog; if anything was saved, reveal the restart prompt."""
