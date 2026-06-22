@@ -1219,9 +1219,9 @@ class ServerWindow(QMainWindow):
         self._tray.activated.connect(self._on_tray_click)
         self._tray.show()
 
-        # Size to content with a little (~10%) headroom, rather than a fixed height.
+        # Size to content with a little (~5%) headroom, rather than a fixed height.
         natural = self.sizeHint().height()
-        self.resize(self.sizeHint().width(), int(natural * 1.1))
+        self.resize(self.sizeHint().width(), int(natural * 1.05))
 
     def _copy_url(self):
         from server.tunnel import copy_to_clipboard
