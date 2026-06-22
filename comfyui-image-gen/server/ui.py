@@ -1080,7 +1080,6 @@ class ServerWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
-        self.setMinimumHeight(620)
         self._stale_check = stale_check
 
         # Cross-thread download support
@@ -1219,6 +1218,10 @@ class ServerWindow(QMainWindow):
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_click)
         self._tray.show()
+
+        # Size to content with a little (~10%) headroom, rather than a fixed height.
+        natural = self.sizeHint().height()
+        self.resize(self.sizeHint().width(), int(natural * 1.1))
 
     def _copy_url(self):
         from server.tunnel import copy_to_clipboard
