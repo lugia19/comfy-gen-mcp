@@ -293,10 +293,27 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
     status_label.setWordWrap(True)
     layout.addWidget(status_label)
 
+    # Driven manually (see _pulse): the built-in indeterminate sweep (setRange(0,0)) doesn't
+    # animate reliably with this Qt/Fusion build, so we bounce the value ourselves.
     progress = QProgressBar()
-    progress.setRange(0, 0)  # indeterminate
+    progress.setRange(0, 100)
+    progress.setTextVisible(False)
     progress.setVisible(False)
     layout.addWidget(progress)
+
+    pulse = {"v": 0, "dir": 4}
+
+    def _pulse():
+        v = pulse["v"] + pulse["dir"]
+        if v >= 100:
+            v, pulse["dir"] = 100, -4
+        elif v <= 0:
+            v, pulse["dir"] = 0, 4
+        pulse["v"] = v
+        progress.setValue(v)
+
+    pulse_timer = QTimer(parent)
+    pulse_timer.timeout.connect(_pulse)
 
     error_label = QLabel("")
     error_label.setStyleSheet("color: #d96b6b;")
@@ -340,6 +357,7 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
         dir_edit.setEnabled(False)
         dir_browse_btn.setEnabled(False)
         progress.setVisible(True)
+        pulse_timer.start(30)
         status_label.setText("Installing ComfyUI... this may take several minutes.")
         error_label.setText("")
         install_state["status"] = "running"
@@ -367,12 +385,14 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
             )
         elif install_state["status"] == "done":
             poll_timer.stop()
+            pulse_timer.stop()
             progress.setVisible(False)
             status_label.setText("ComfyUI installed successfully!")
             log.info("Install complete, advancing UI")
             QTimer.singleShot(500, on_install_ready)
         elif install_state["status"] == "error":
             poll_timer.stop()
+            pulse_timer.stop()
             progress.setVisible(False)
             status_label.setText("")
             error_label.setText(f"Installation failed: {install_state['error']}")
@@ -528,13 +548,12 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
     if anima_pack:
         layout.addWidget(_make_hline())
         layout.addWidget(QLabel("<b>Anima LoRAs</b>"))
-        d = QLabel("Applied on top of the Anima model. Drop .safetensors into the loras "
-                   "folder, then add them here. A LoRA only applies when its trigger word is "
-                   "in the prompt (new LoRAs default the trigger to the filename) — clear the "
-                   "trigger to always apply it. Be sure to set the trigger word to the same "
-                   "one used to train the LoRA (if applicable). If the LoRA adds a new artist "
-                   "or style, also add its tag to the Anima Artist Styles list above so the "
-                   "model knows to use it.")
+        d = QLabel("Drop .safetensors into the loras folder, then add them here. A LoRA only "
+                   "applies when its trigger word is in the prompt — clear the trigger to "
+                   "always apply it. Be sure to set the trigger word to the same one used to "
+                   "train the LoRA (if applicable).\n\nIf the LoRA adds a new artist or style, "
+                   "also add its tag to the Anima Artist Styles list above so the model knows "
+                   "to use it.")
         d.setWordWrap(True)
         d.setStyleSheet("color: gray;")
         layout.addWidget(d)
