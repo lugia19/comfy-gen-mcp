@@ -980,24 +980,17 @@ class ServerWindow(QMainWindow):
         settings_row.addWidget(settings_btn)
         layout.addLayout(settings_row)
 
-        # Restart-to-apply prompt (hidden until settings are saved)
-        self._restart_row = QWidget()
-        rr = QHBoxLayout(self._restart_row)
-        rr.setContentsMargins(0, 0, 0, 0)
-        if self._stale_check is not None:  # managed by the shim → relaunches automatically
-            restart_text = "Settings changed — click Restart to apply (the server relaunches automatically)."
+        # Restart-to-apply notice (hidden until settings are saved)
+        if self._stale_check is not None:  # managed by the shim → relaunches on next use
+            restart_text = ("Settings saved — to apply, quit from the tray icon; "
+                            "the server relaunches automatically on next use.")
         else:
-            restart_text = "Settings changed — click Restart, then relaunch the server to apply."
-        restart_label = QLabel(restart_text)
-        restart_label.setStyleSheet("color: orange;")
-        restart_label.setWordWrap(True)
-        restart_btn = QPushButton("Restart")
-        restart_btn.setFixedWidth(140)
-        restart_btn.clicked.connect(self._restart)
-        rr.addWidget(restart_label)
-        rr.addWidget(restart_btn)
-        self._restart_row.setVisible(False)
-        layout.addWidget(self._restart_row)
+            restart_text = "Settings saved — restart the server to apply your changes."
+        self._restart_label = QLabel(restart_text)
+        self._restart_label.setStyleSheet("color: orange;")
+        self._restart_label.setWordWrap(True)
+        self._restart_label.setVisible(False)
+        layout.addWidget(self._restart_label)
 
         # Troubleshooting
         layout.addWidget(_make_hline())
@@ -1112,15 +1105,9 @@ class ServerWindow(QMainWindow):
             self._comfyui_status.setStyleSheet("color: orange;")
 
     def _open_settings(self):
-        """Open the Settings dialog; if anything was saved, reveal the restart prompt."""
+        """Open the Settings dialog; if anything was saved, show the restart notice."""
         if run_settings_dialog():
-            self._restart_row.setVisible(True)
-
-    def _restart(self):
-        """Apply settings by restarting: quit the server. In managed mode the shim respawns
-        it on the next call; standalone users relaunch it themselves."""
-        log.info("Restart requested to apply settings — shutting down.")
-        self._quit()
+            self._restart_label.setVisible(True)
 
     def _reinstall_comfyui(self):
         """Nuke the ComfyUI installation directory and quit so the user can re-run setup."""
