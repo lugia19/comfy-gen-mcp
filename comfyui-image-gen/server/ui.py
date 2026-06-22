@@ -7,14 +7,15 @@ import sys
 import threading
 import webbrowser
 
-import threading as _threading
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QPalette, QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -26,15 +27,38 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSpinBox,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
-from server.config import EXTENSION_VERSION, load_local_config, save_local_config
+from server.config import EXTENSION_VERSION, MODEL_PACKS_DIR, load_local_config, save_local_config
 from server.comfyui import find_comfy_cli, find_models_dir, install_comfyui, remove_comfyui_dir, _detect_gpu, _default_install_dir
 
 log = logging.getLogger("comfy-mcp")
+
+
+def _format_bytes(n) -> str:
+    """Format a byte count as a human-readable GB/MB/KB string."""
+    if n >= 1_000_000_000:
+        return f"{n / 1_073_741_824:.1f} GB"
+    if n >= 1_000_000:
+        return f"{n / 1_048_576:.0f} MB"
+    return f"{n / 1024:.0f} KB"
+
+
+def _open_path(path: str) -> None:
+    """Open a file or folder in the OS default handler (file browser / editor)."""
+    if platform.system() == "Windows":
+        os.startfile(path)
+    elif platform.system() == "Darwin":
+        import subprocess
+        subprocess.Popen(["open", path])
+    else:
+        import subprocess
+        subprocess.Popen(["xdg-open", path])
 
 
 def _get_icon_path() -> str | None:
@@ -249,12 +273,275 @@ def run_comfyui_setup(in_process: bool = False):
         sys.exit(0)
 
 
+# ── Settings form (shared by the setup wizard and the Settings dialog) ──
+
+def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
+                         groups: dict[str, list[dict]], parent: QWidget):
+    """Populate *layout* with the full settings form and return a ``collect()`` closure.
+
+    Sections: model-pack selection (multi-pack groups), the global scalar fields from
+    SETTINGS_SCHEMA, anima artist styles, and the anima LoRA list editor. ``collect()``
+    reads the widgets, merges values into local_config.json (preserving unknown keys), and
+    saves. *packs* is the full pack list (used to detect the anima pack); *groups* is every
+    tool group.
+    """
+    from server.settings import SETTINGS_SCHEMA
+    cfg = load_local_config()
+    anima_pack = next((p for p in packs if p.get("default_artist_list")), None)
+
+    # ── Model packs: one radio group per multi-pack tool ──
+    radio_groups: list[tuple[str, list[tuple[dict, QRadioButton]]]] = []
+    multi = [(tn, g) for tn, g in groups.items() if len(g) > 1]
+    if multi:
+        layout.addWidget(QLabel("<b>Model packs</b>"))
+        for tool_name, group in multi:
+            header = tool_name.replace("generate_", "").replace("_", " ").title() + " Model"
+            layout.addWidget(QLabel(f"{header}:"))
+            btn_group = QButtonGroup(parent)
+            btn_group.setExclusive(True)
+            prev = cfg.get("pack_selections", {}).get(tool_name)
+            group_radios: list[tuple[dict, QRadioButton]] = []
+            for pack in group:
+                total = sum(m["size_bytes"] for m in pack["models"])
+                rb = QRadioButton(f"{pack['display_name']} ({_format_bytes(total)})")
+                if prev == pack["name"]:
+                    rb.setChecked(True)
+                elif not prev and pack.get("is_default"):
+                    rb.setChecked(True)
+                desc = QLabel(f"  {pack.get('description', '')}")
+                desc.setWordWrap(True)
+                desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 4px;")
+                btn_group.addButton(rb)
+                layout.addWidget(rb)
+                layout.addWidget(desc)
+                group_radios.append((pack, rb))
+            if not any(rb.isChecked() for _, rb in group_radios):
+                group_radios[0][1].setChecked(True)
+            radio_groups.append((tool_name, group_radios))
+        layout.addWidget(_make_hline())
+
+    # ── Global scalar fields from the schema ──
+    field_widgets: dict[str, tuple[str, QWidget]] = {}
+
+    def add_field(field: dict):
+        layout.addWidget(QLabel(f"<b>{field['title']}</b>"))
+        if field.get("description"):
+            d = QLabel(field["description"])
+            d.setWordWrap(True)
+            d.setStyleSheet("color: gray;")
+            layout.addWidget(d)
+        ftype = field["type"]
+        cur = cfg.get(field["key"], field["default"])
+        if ftype == "text":
+            w = QLineEdit(str(cur))
+            layout.addWidget(w)
+        elif ftype == "path":
+            row = QHBoxLayout()
+            w = QLineEdit(str(cur))
+            browse = QPushButton("Browse...")
+            browse.setFixedWidth(100)
+            browse.clicked.connect(
+                lambda _=False, ww=w: (
+                    lambda p: ww.setText(p) if p else None
+                )(QFileDialog.getOpenFileName(parent, "Select workflow JSON", "", "JSON (*.json)")[0])
+            )
+            row.addWidget(w)
+            row.addWidget(browse)
+            layout.addLayout(row)
+        elif ftype == "int":
+            w = QSpinBox()
+            w.setRange(field.get("min", 0), field.get("max", 1_000_000))
+            try:
+                w.setValue(int(cur))
+            except (TypeError, ValueError):
+                w.setValue(int(field["default"]))
+            layout.addWidget(w)
+        elif ftype == "bool":
+            w = QCheckBox("Enabled")
+            w.setChecked(bool(cur))
+            layout.addWidget(w)
+        else:
+            return
+        field_widgets[field["key"]] = (ftype, w)
+
+    for f in [s for s in SETTINGS_SCHEMA if not s.get("advanced")]:
+        add_field(f)
+
+    # ── Anima artist styles ──
+    artist_entry = None
+    if anima_pack:
+        layout.addWidget(_make_hline())
+        layout.addWidget(QLabel("<b>Anima Artist Styles</b>"))
+        d = QLabel("Comma-separated @artist tags. The model defaults to the first one.")
+        d.setWordWrap(True)
+        d.setStyleSheet("color: gray;")
+        layout.addWidget(d)
+        browse_styles = QPushButton("Browse Styles")
+        browse_styles.clicked.connect(
+            lambda: webbrowser.open("https://thetacursed.github.io/Anima-Style-Explorer/index.html")
+        )
+        layout.addWidget(browse_styles)
+        artist_entry = QLineEdit()
+        cur_art = (cfg.get("pack_settings", {}).get("anima", {}).get("artist_list")
+                   or anima_pack["default_artist_list"])
+        artist_entry.setText(cur_art)
+        layout.addWidget(artist_entry)
+
+    # ── Anima LoRAs (list editor) ──
+    lora_rows: list[tuple[QComboBox, QDoubleSpinBox, QWidget]] = []
+    if anima_pack:
+        layout.addWidget(_make_hline())
+        layout.addWidget(QLabel("<b>Anima LoRAs</b>"))
+        d = QLabel("Applied on top of the Anima model. Drop .safetensors into the loras "
+                   "folder, then add them here. Strength defaults to 1.0.")
+        d.setWordWrap(True)
+        d.setStyleSheet("color: gray;")
+        layout.addWidget(d)
+
+        comfy_cli = find_comfy_cli()
+        mdir = find_models_dir(comfy_cli) if comfy_cli else None
+        loras_dir = os.path.join(mdir, "loras") if mdir else None
+        available = []
+        if loras_dir and os.path.isdir(loras_dir):
+            available = sorted(f for f in os.listdir(loras_dir) if f.lower().endswith(".safetensors"))
+
+        lora_container = QWidget()
+        lora_layout = QVBoxLayout(lora_container)
+        lora_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(lora_container)
+
+        def add_lora_row(name: str = "", strength: float = 1.0):
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.addItems(available)
+            if name:
+                combo.setCurrentText(name)
+            elif available:
+                combo.setCurrentIndex(0)
+            else:
+                combo.setCurrentText("")
+            spin = QDoubleSpinBox()
+            spin.setRange(-5.0, 5.0)
+            spin.setSingleStep(0.1)
+            spin.setValue(float(strength))
+            remove = QPushButton("Remove")
+            remove.setFixedWidth(80)
+            entry = (combo, spin, row)
+            remove.clicked.connect(lambda: (lora_rows.remove(entry), row.setParent(None)))
+            rl.addWidget(combo)
+            rl.addWidget(spin)
+            rl.addWidget(remove)
+            lora_layout.addWidget(row)
+            lora_rows.append(entry)
+
+        for e in cfg.get("pack_loras", {}).get("anima", []):
+            if isinstance(e, str):
+                e = {"name": e}
+            add_lora_row(e.get("name", ""), e.get("strength", 1.0))
+
+        add_btn = QPushButton("Add LoRA")
+        add_btn.clicked.connect(lambda: add_lora_row())
+        layout.addWidget(add_btn)
+
+    # ── Advanced fields ──
+    for f in [s for s in SETTINGS_SCHEMA if s.get("advanced")]:
+        layout.addWidget(_make_hline())
+        add_field(f)
+
+    def collect() -> dict:
+        c = load_local_config()
+        if radio_groups:
+            sel = c.get("pack_selections", {})
+            for tool_name, group_radios in radio_groups:
+                chosen = next((p for p, rb in group_radios if rb.isChecked()), None)
+                if chosen:
+                    sel[tool_name] = chosen["name"]
+            c["pack_selections"] = sel
+        for key, (ftype, w) in field_widgets.items():
+            if ftype in ("text", "path"):
+                c[key] = w.text().strip()
+            elif ftype == "int":
+                c[key] = int(w.value())
+            elif ftype == "bool":
+                c[key] = bool(w.isChecked())
+        if artist_entry is not None:
+            val = artist_entry.text().strip()
+            if val:
+                c.setdefault("pack_settings", {}).setdefault("anima", {})["artist_list"] = val
+        if anima_pack:
+            loras = []
+            for combo, spin, _row in lora_rows:
+                name = combo.currentText().strip()
+                if name:
+                    loras.append({"name": name, "strength": round(float(spin.value()), 3)})
+            c.setdefault("pack_loras", {})["anima"] = loras
+        save_local_config(c)
+        log.info("Settings saved to local_config.json")
+        return c
+
+    return collect
+
+
+def run_settings_dialog():
+    """Open the Settings dialog (modal). Loads all packs itself so the tray window doesn't
+    have to thread them through. Saving writes local_config.json; changes apply on restart."""
+    from server.model_pack import group_packs_by_tool, load_all_packs
+
+    app = _get_app()  # noqa: F841 — ensures a QApplication exists
+    packs = load_all_packs(MODEL_PACKS_DIR)
+    groups = group_packs_by_tool(packs)
+
+    dialog = QDialog()
+    dialog.setWindowTitle("Comfy-Gen-MCP — Settings")
+    dialog.setMinimumWidth(560)
+    dialog.setMinimumHeight(600)
+    outer = QVBoxLayout(dialog)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    inner = QWidget()
+    form_layout = QVBoxLayout(inner)
+    collect = _build_settings_form(form_layout, packs, groups, inner)
+    form_layout.addStretch()
+    scroll.setWidget(inner)
+    outer.addWidget(scroll)
+
+    notice = QLabel("")
+    notice.setStyleSheet("color: #4CAF50;")
+    notice.setWordWrap(True)
+    outer.addWidget(notice)
+
+    btn_row = QHBoxLayout()
+    btn_row.addStretch()
+    save_btn = QPushButton("Save")
+    close_btn = QPushButton("Close")
+    btn_row.addWidget(save_btn)
+    btn_row.addWidget(close_btn)
+    outer.addLayout(btn_row)
+
+    saved = {"v": False}
+
+    def _save():
+        collect()
+        saved["v"] = True
+        notice.setText("Settings saved. Restart the server to apply changes.")
+
+    save_btn.clicked.connect(_save)
+    close_btn.clicked.connect(dialog.accept)
+    dialog.exec()
+    return saved["v"]
+
+
 # ── 2. First-Time Setup Wizard ───────────────────────────────────────
 
 def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_process: bool = False):
-    """First-run wizard: ComfyUI install → pack selection → artist config → download."""
+    """First-run wizard: ComfyUI install → Settings → download."""
     log.info("Opening first-time setup (%d packs, %d groups)", len(packs), len(groups))
     from server.downloader import DownloadState, download_models
+    from server.model_pack import resolve_pack_selections
 
     app = _get_app()
     comfy_cli = find_comfy_cli()
@@ -297,7 +584,8 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
             resolved = find_models_dir(comfy_cli)
             if resolved:
                 state["models_dir"] = resolved
-        show_page(1)  # pack selection
+        _rebuild_settings_page()  # refresh so the LoRA file list reflects the new models dir
+        show_page(1)
 
     _build_comfyui_install_panel(comfyui_page, _advance_from_install)
 
@@ -305,153 +593,44 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
     stack_layout.addWidget(comfyui_page)
     pages.append(comfyui_page)
 
-    # ── Page 1: Pack selection ──
-    select_page = QWidget()
-    sl = QVBoxLayout(select_page)
-    sl.addWidget(QLabel("<h3>Select which image models to install:</h3>"))
+    # ── Page 1: Settings (the same form used post-setup) ──
+    settings_page = QWidget()
+    spl = QVBoxLayout(settings_page)
+    spl.addWidget(QLabel("<h3>Settings</h3>"))
+    intro2 = QLabel("Pick your models and review the settings below. You can change any of "
+                    "these later from the server window.")
+    intro2.setWordWrap(True)
+    spl.addWidget(intro2)
 
-    def _format_bytes(n):
-        if n >= 1_000_000_000:
-            return f"{n / 1_073_741_824:.1f} GB"
-        if n >= 1_000_000:
-            return f"{n / 1_048_576:.0f} MB"
-        return f"{n / 1024:.0f} KB"
+    settings_scroll = QScrollArea()
+    settings_scroll.setWidgetResizable(True)
+    spl.addWidget(settings_scroll)
 
-    # Build group-aware selection UI
-    # For single-pack groups: checkbox (as before)
-    # For multi-pack groups: radio buttons (pick one) + skip option
-    pack_checkboxes: list[tuple[dict, QCheckBox]] = []  # single-pack groups
-    radio_groups: list[tuple[str, QButtonGroup, list[tuple[dict, QRadioButton]]]] = []  # multi-pack groups
+    collect_holder = {"collect": None}
 
-    for tool_name, group in groups.items():
-        if len(group) == 1:
-            # Single pack — checkbox as before
-            pack = group[0]
-            total_size = sum(m["size_bytes"] for m in pack["models"])
-            cb = QCheckBox(f"{pack['display_name']} ({_format_bytes(total_size)})")
-            cb.setChecked(True)
-            desc = QLabel(f"  {pack.get('description', '')}")
-            desc.setWordWrap(True)
-            desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 8px;")
-            sl.addWidget(cb)
-            sl.addWidget(desc)
-            pack_checkboxes.append((pack, cb))
-        else:
-            # Multi-pack group — radio buttons
-            # Derive a readable header from the tool_name
-            header_text = tool_name.replace("generate_", "").replace("_", " ").title() + " Model"
-            sl.addWidget(QLabel(f"<b>{header_text}:</b>"))
+    def _rebuild_settings_page():
+        inner = QWidget()
+        il = QVBoxLayout(inner)
+        collect_holder["collect"] = _build_settings_form(il, packs, groups, inner)
+        il.addStretch()
+        settings_scroll.setWidget(inner)
 
-            btn_group = QButtonGroup(select_page)
-            btn_group.setExclusive(True)
-            group_radios: list[tuple[dict, QRadioButton]] = []
+    _rebuild_settings_page()
 
-            # Pre-select user's previous choice if re-running setup
-            existing_cfg = load_local_config()
-            prev_selection = existing_cfg.get("pack_selections", {}).get(tool_name)
+    settings_continue_btn = QPushButton("Continue")
 
-            for pack in group:
-                total_size = sum(m["size_bytes"] for m in pack["models"])
-                rb = QRadioButton(f"{pack['display_name']} ({_format_bytes(total_size)})")
-                if prev_selection:
-                    if pack["name"] == prev_selection:
-                        rb.setChecked(True)
-                elif pack.get("is_default"):
-                    rb.setChecked(True)
-                desc = QLabel(f"  {pack.get('description', '')}")
-                desc.setWordWrap(True)
-                desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 4px;")
-                btn_group.addButton(rb)
-                sl.addWidget(rb)
-                sl.addWidget(desc)
-                group_radios.append((pack, rb))
+    def on_settings_continue():
+        collect_holder["collect"]()  # persist all settings (incl. pack_selections)
+        # Download one resolved pack per group (lazy download covers anything skipped here).
+        selected = resolve_pack_selections(groups)
+        _start_downloads(selected)
 
-            # "Skip" option
-            skip_rb = QRadioButton("Skip (download later)")
-            skip_rb.setStyleSheet("color: gray;")
-            btn_group.addButton(skip_rb)
-            sl.addWidget(skip_rb)
+    settings_continue_btn.clicked.connect(on_settings_continue)
+    spl.addWidget(settings_continue_btn)
+    stack_layout.addWidget(settings_page)
+    pages.append(settings_page)
 
-            # If no pack has is_default, select the first one
-            if not any(rb.isChecked() for _, rb in group_radios):
-                group_radios[0][1].setChecked(True)
-
-            radio_groups.append((tool_name, btn_group, group_radios))
-
-    note = QLabel("You can always change your model selection later in Settings.")
-    note.setStyleSheet("color: gray;")
-    sl.addWidget(note)
-
-    install_btn = QPushButton("Install Selected")
-
-    def on_install():
-        # Collect selected packs from checkboxes (single-pack groups)
-        selected = [p for p, cb in pack_checkboxes if cb.isChecked()]
-
-        # Collect selected packs from radio groups (multi-pack groups)
-        # Also save pack_selections to local_config
-        cfg = load_local_config()
-        pack_selections = cfg.get("pack_selections", {})
-        for tool_name, btn_group, group_radios in radio_groups:
-            chosen = next((p for p, rb in group_radios if rb.isChecked()), None)
-            if chosen:
-                selected.append(chosen)
-                pack_selections[tool_name] = chosen["name"]
-        cfg["pack_selections"] = pack_selections
-        save_local_config(cfg)
-
-        if not selected:
-            if state["models_dir"]:
-                cfg["setup_version"] = EXTENSION_VERSION
-                save_local_config(cfg)
-            wizard.accept()
-            return
-        anima_pack = next((p for p in selected if p.get("default_artist_list")), None)
-        if anima_pack:
-            artist_entry.setText(anima_pack["default_artist_list"])
-            wizard._selected = selected
-            show_page(2)  # artist config
-        else:
-            wizard._selected = selected
-            _start_downloads(selected)
-
-    install_btn.clicked.connect(on_install)
-    sl.addWidget(install_btn)
-    sl.addStretch()
-    stack_layout.addWidget(select_page)
-    pages.append(select_page)
-
-    # ── Page 2: Artist config ──
-    artist_page = QWidget()
-    al = QVBoxLayout(artist_page)
-    al.addWidget(QLabel("<h3>Anima Artist Styles</h3>"))
-    al.addWidget(QLabel("Comma-separated list of @artist tags. The model will default to the first one.\nYou can change this later in Settings > Extensions > Configure."))
-
-    browse_styles_btn = QPushButton("Browse Styles")
-    browse_styles_btn.clicked.connect(lambda: webbrowser.open("https://thetacursed.github.io/Anima-Style-Explorer/index.html"))
-    al.addWidget(browse_styles_btn)
-
-    artist_entry = QLineEdit()
-    al.addWidget(artist_entry)
-
-    continue_btn = QPushButton("Continue")
-
-    def on_artist_continue():
-        value = artist_entry.text().strip()
-        if value:
-            cfg = load_local_config()
-            cfg.setdefault("pack_settings", {}).setdefault("anima", {})["artist_list"] = value
-            save_local_config(cfg)
-            log.info("Saved anima artist_list: %s", value)
-        _start_downloads(wizard._selected)
-
-    continue_btn.clicked.connect(on_artist_continue)
-    al.addWidget(continue_btn)
-    al.addStretch()
-    stack_layout.addWidget(artist_page)
-    pages.append(artist_page)
-
-    # ── Page 3: Download ──
+    # ── Page 2: Download ──
     dl_page = QWidget()
     dll = QVBoxLayout(dl_page)
     dl_title = QLabel("<h3>Downloading models...</h3>")
@@ -478,7 +657,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
     download_thread_holder = []
 
     def _start_downloads(selected):
-        show_page(3)
+        show_page(2)
         all_models = []
         for pack in selected:
             for m in pack["models"]:
@@ -583,13 +762,6 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
     dl_state = DownloadState()
     download_thread_holder = []
 
-    def _format_bytes(n):
-        if n >= 1_000_000_000:
-            return f"{n / 1_073_741_824:.1f} GB"
-        if n >= 1_000_000:
-            return f"{n / 1_048_576:.0f} MB"
-        return f"{n / 1024:.0f} KB"
-
     def start():
         if download_thread_holder and download_thread_holder[0].is_alive():
             return
@@ -680,13 +852,15 @@ class ServerWindow(QMainWindow):
     # Signal for cross-thread download UI requests (background thread → main thread)
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
-    def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None):
+    def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
+                 stale_check=None):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
+        self._stale_check = stale_check
 
         # Cross-thread download support
-        self._download_done = _threading.Event()
+        self._download_done = threading.Event()
         self.download_requested.connect(self._show_download_dialog)
 
         self._url = url or f"http://localhost:{port}{mcp_path}"
@@ -726,6 +900,62 @@ class ServerWindow(QMainWindow):
             instructions.setWordWrap(True)
             layout.addWidget(instructions)
 
+        # Configuration & models
+        layout.addWidget(_make_hline())
+
+        settings_row = QHBoxLayout()
+        settings_label = QLabel("Configure models, artist styles, steps, LoRAs, and more.")
+        settings_label.setStyleSheet("color: gray;")
+        settings_label.setWordWrap(True)
+        settings_btn = QPushButton("Settings")
+        settings_btn.setFixedWidth(140)
+        settings_btn.clicked.connect(self._open_settings)
+        settings_row.addWidget(settings_label)
+        settings_row.addWidget(settings_btn)
+        layout.addLayout(settings_row)
+
+        # Restart-to-apply prompt (hidden until settings are saved)
+        self._restart_row = QWidget()
+        rr = QHBoxLayout(self._restart_row)
+        rr.setContentsMargins(0, 0, 0, 0)
+        if self._stale_check is not None:  # managed by the shim → relaunches automatically
+            restart_text = "Settings changed — click Restart to apply (the server relaunches automatically)."
+        else:
+            restart_text = "Settings changed — click Restart, then relaunch the server to apply."
+        restart_label = QLabel(restart_text)
+        restart_label.setStyleSheet("color: orange;")
+        restart_label.setWordWrap(True)
+        restart_btn = QPushButton("Restart")
+        restart_btn.setFixedWidth(140)
+        restart_btn.clicked.connect(self._restart)
+        rr.addWidget(restart_label)
+        rr.addWidget(restart_btn)
+        self._restart_row.setVisible(False)
+        layout.addWidget(self._restart_row)
+
+        # Power-user escape hatches
+        config_row = QHBoxLayout()
+        config_label = QLabel("Or edit local_config.json directly.")
+        config_label.setStyleSheet("color: gray;")
+        config_label.setWordWrap(True)
+        open_config_btn = QPushButton("Open Config File")
+        open_config_btn.setFixedWidth(140)
+        open_config_btn.clicked.connect(self._open_config_file)
+        config_row.addWidget(config_label)
+        config_row.addWidget(open_config_btn)
+        layout.addLayout(config_row)
+
+        loras_row = QHBoxLayout()
+        loras_label = QLabel("Drop custom LoRA .safetensors files here, then add them in Settings.")
+        loras_label.setStyleSheet("color: gray;")
+        loras_label.setWordWrap(True)
+        open_loras_btn = QPushButton("Open LoRAs Folder")
+        open_loras_btn.setFixedWidth(140)
+        open_loras_btn.clicked.connect(self._open_loras_folder)
+        loras_row.addWidget(loras_label)
+        loras_row.addWidget(open_loras_btn)
+        layout.addLayout(loras_row)
+
         # Troubleshooting
         layout.addWidget(_make_hline())
         troubleshoot_row = QHBoxLayout()
@@ -752,6 +982,12 @@ class ServerWindow(QMainWindow):
         self._comfyui_poll = QTimer(self)
         self._comfyui_poll.timeout.connect(self._poll_comfyui)
         self._comfyui_poll.start(3000)
+
+        # Managed mode: self-close when the spawning shim's keepalive goes stale.
+        if self._stale_check is not None:
+            self._stale_poll = QTimer(self)
+            self._stale_poll.timeout.connect(self._check_stale)
+            self._stale_poll.start(5000)
 
         footer = QLabel("Closing this window hides it to the system tray.\nRight-click the tray icon and select Quit to stop the server.")
         footer.setStyleSheet("color: #4CAF50;")
@@ -807,6 +1043,15 @@ class ServerWindow(QMainWindow):
         self._quitting = True
         QApplication.quit()
 
+    def _check_stale(self):
+        """Managed mode: if the spawning shim is gone/stale, shut the server down."""
+        try:
+            if self._stale_check and self._stale_check():
+                log.info("Managed lifecycle: shutting down (shim gone/stale)")
+                self._quit()
+        except Exception as e:
+            log.warning("stale_check raised: %s", e)
+
     def closeEvent(self, event):
         """Hide to tray instead of quitting (unless we're actually quitting)."""
         if getattr(self, "_quitting", False):
@@ -842,13 +1087,52 @@ class ServerWindow(QMainWindow):
             QMessageBox.information(self, "No Log", f"Log file not found:\n{log_path}")
             return
 
-        import subprocess as _sp
-        if platform.system() == "Windows":
-            os.startfile(log_path)
-        elif platform.system() == "Darwin":
-            _sp.Popen(["open", log_path])
-        else:
-            _sp.Popen(["xdg-open", log_path])
+        _open_path(log_path)
+
+    def _open_config_file(self):
+        """Open local_config.json in the system's default editor (seeding it if missing)."""
+        from server.config import LOCAL_CONFIG_PATH, ensure_user_settings, load_local_config, save_local_config
+        if not os.path.isfile(LOCAL_CONFIG_PATH):
+            cfg = load_local_config()
+            ensure_user_settings(cfg)
+            try:
+                save_local_config(cfg)
+            except OSError as e:
+                QMessageBox.information(self, "Config File", f"Could not create config file:\n{LOCAL_CONFIG_PATH}\n\n{e}")
+                return
+
+        _open_path(LOCAL_CONFIG_PATH)
+
+    def _open_loras_folder(self):
+        """Open ComfyUI's models/loras folder in the system file browser (creating it if needed)."""
+        comfy_cli = find_comfy_cli()
+        models_dir = find_models_dir(comfy_cli) if comfy_cli else None
+        if not models_dir:
+            QMessageBox.information(
+                self, "LoRAs Folder Not Found",
+                "Could not locate ComfyUI's models directory. Install/launch ComfyUI first."
+            )
+            return
+
+        loras_dir = os.path.join(models_dir, "loras")
+        try:
+            os.makedirs(loras_dir, exist_ok=True)
+        except OSError as e:
+            QMessageBox.information(self, "LoRAs Folder", f"Could not open folder:\n{loras_dir}\n\n{e}")
+            return
+
+        _open_path(loras_dir)
+
+    def _open_settings(self):
+        """Open the Settings dialog; if anything was saved, reveal the restart prompt."""
+        if run_settings_dialog():
+            self._restart_row.setVisible(True)
+
+    def _restart(self):
+        """Apply settings by restarting: quit the server. In managed mode the shim respawns
+        it on the next call; standalone users relaunch it themselves."""
+        log.info("Restart requested to apply settings — shutting down.")
+        self._quit()
 
     def _reinstall_comfyui(self):
         """Nuke the ComfyUI installation directory and quit so the user can re-run setup."""
@@ -908,34 +1192,30 @@ class ServerWindow(QMainWindow):
         log.info("Download request completed: %s", title)
 
 
-def show_url_window(url: str, on_ready=None):
-    """Show the tunnel URL window with tray icon. Blocks until Quit.
+def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
+    """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
+    stale_check: optional callable; if it returns True the window self-closes (managed mode).
     """
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
-    window = ServerWindow(title="MCP Server Running", url=url)
-    window.show()
-    if on_ready:
-        on_ready(window)
-    log.info("Starting Qt event loop for URL window...")
-    app.exec()
-
-
-def show_server_running_window(port: int, mcp_path: str, on_ready=None):
-    """Show minimal server running window with tray icon. Blocks until Quit.
-
-    on_ready: optional callback receiving the ServerWindow before the event loop starts.
-    """
-    app = _get_app()
-    app.setQuitOnLastWindowClosed(False)
-    window = ServerWindow(title="MCP Server Running", port=port, mcp_path=mcp_path)
+    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
     log.info("Starting Qt event loop for server window...")
     app.exec()
+
+
+def show_url_window(url: str, on_ready=None, stale_check=None):
+    """Show the tunnel URL window with tray icon. Blocks until Quit."""
+    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check)
+
+
+def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None):
+    """Show the minimal local server-running window with tray icon. Blocks until Quit."""
+    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check)
 
 
 def run_with_progress(label: str, task_fn) -> object:

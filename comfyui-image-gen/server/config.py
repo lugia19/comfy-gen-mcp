@@ -17,14 +17,23 @@ _EXT_DIR = _BUNDLE_DIR
 MODEL_PACKS_DIR = os.path.join(_BUNDLE_DIR, "model_packs")
 LOCAL_CONFIG_PATH = os.path.join(_EXT_DIR, "local_config.json")
 
-# User-facing config keys surfaced in local_config.json so users can discover
-# and edit them. Keep in sync with manifest.json's user_config block.
-USER_CONFIG_DEFAULTS = {
-    "comfyui_url": COMFYUI_DEFAULT_URL,
-    "custom_workflow": "",
-    "custom_workflow_prompt_node": "",
-    "anima_artists": "@cutesexyrobutts, @nyantcha, @bone nigi",
+# Per-pack config containers seeded into local_config.json (not rendered as scalar form
+# fields; the Settings panel builds these from the loaded packs):
+#   pack_loras       {pack_name: [{"name": "myLora.safetensors", "strength": 0.8}]}  (anima only)
+#   pack_selections  {tool_name: pack_name}  (which pack a multi-pack tool uses)
+#   pack_settings    {pack_name: {"artist_list": "..."}}
+_CONTAINER_DEFAULTS = {
+    "pack_loras": {},
+    "pack_selections": {},
+    "pack_settings": {},
 }
+
+
+def get_user_config_defaults() -> dict:
+    """Default values for every user-configurable key. Global scalar settings come from the
+    settings schema (the single source of truth); per-pack containers are added here."""
+    from server.settings import get_defaults  # lazy: avoids settings<->config import cycle
+    return {**get_defaults(), **_CONTAINER_DEFAULTS}
 
 
 def is_http_mode() -> bool:
@@ -50,7 +59,7 @@ def save_local_config(config: dict):
 def ensure_user_settings(cfg: dict) -> bool:
     """Fill in any missing user-configurable keys with defaults. Returns True if cfg changed."""
     changed = False
-    for key, default in USER_CONFIG_DEFAULTS.items():
+    for key, default in get_user_config_defaults().items():
         if key not in cfg:
             cfg[key] = default
             changed = True

@@ -14,13 +14,7 @@
     "mcp_config": {
       "command": "uv",
       "args": ["run", "--directory", "${__dirname}", "${__dirname}/server/main.py"],
-      "env": {
-        "COMFYUI_URL": "${user_config.comfyui_url}",
-        "CUSTOM_WORKFLOW": "${user_config.custom_workflow}",
-        "CUSTOM_WORKFLOW_PROMPT_NODE": "${user_config.custom_workflow_prompt_node}",
-        "ANIMA_ARTISTS": "${user_config.anima_artists}",
-        "PACK_SELECT_GENERATE_REALISTIC_IMAGE": "${user_config.pack_select_generate_realistic_image}"
-      }
+      "env": {}
     }
   },
   "tools": [
@@ -46,37 +40,10 @@
     }
   ],
   "user_config": {
-    "anima_artists": {
+    "settings_notice": {
       "type": "string",
-      "title": "Anima Artist Styles",
-      "description": "Comma-separated list of artist styles for the Anima model. The model defaults to the first one. Uses @ prefix (e.g. @cutesexyrobutts, @nyantcha).",
-      "default": "@cutesexyrobutts, @nyantcha, @bone nigi",
-      "required": false
-    },
-    "comfyui_url": {
-      "type": "string",
-      "title": "ComfyUI URL",
-      "description": "URL of your ComfyUI instance (leave default unless you have a custom setup)",
-      "default": "http://127.0.0.1:8188",
-      "required": false
-    },
-    "custom_workflow": {
-      "type": "string",
-      "title": "Custom Workflow Path (optional)",
-      "description": "Path to a ComfyUI workflow exported in API format (.json). If provided, this replaces the built-in workflow. Restart the extension after changing this.",
-      "required": false
-    },
-    "custom_workflow_prompt_node": {
-      "type": "string",
-      "title": "Custom Workflow Prompt Node Title (optional)",
-      "description": "The title (_meta.title) of the node in your custom workflow where the prompt text should be injected (e.g. 'CLIP Text Encode (Prompt)'). If not set, auto-detection is attempted by tracing the first KSampler's positive input. Restart the extension after changing this.",
-      "required": false
-    },
-    "pack_select_generate_realistic_image": {
-      "type": "string",
-      "title": "Realistic Image Model Pack",
-      "description": "Which model to use for realistic image generation. Options: flux2klein, z_image_turbo. Leave empty to use whichever was picked during setup.",
-      "default": "",
+      "title": "Configuration",
+      "description": "Settings (models, artist styles, sampling steps, LoRAs, ComfyUI URL, custom workflows) are managed in the Comfy-Gen-MCP server window that opens after first run — look for its tray icon and click Settings. This field is unused.",
       "required": false
     }
   },

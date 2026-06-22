@@ -35,10 +35,18 @@ from server.comfyui import (
     stop_comfyui,
     upload_image,
 )
-from server.config import COMFYUI_DEFAULT_URL, EXTENSION_VERSION, MODEL_PACKS_DIR, _EXT_DIR, is_http_mode
+from server.config import (
+    COMFYUI_DEFAULT_URL,
+    EXTENSION_VERSION,
+    MODEL_PACKS_DIR,
+    ensure_user_settings,
+    is_http_mode,
+    load_local_config,
+    save_local_config,
+)
 from server.comfy_job import ComfyJob, wait_for_job
 from server.model_pack import check_models_present, group_packs_by_tool, load_all_packs, resolve_pack_selections
-from server.workflow import load_custom_workflow
+from server.workflow import inject_loras, load_custom_workflow
 
 log = logging.getLogger("comfy-mcp")
 # CRITICAL: logs must go to stderr — stdout is the MCP stdio transport channel.
@@ -71,8 +79,13 @@ models_dir: str | None = None
 
 # Per-pack download state: pack_name → True if download in progress
 _downloading: dict[str, bool] = {}
-setup_running: bool = False  # True while first-run or ComfyUI setup is in progress
 _server_window = None  # set in HTTP mode for cross-thread download UI
+
+# Managed-lifecycle state: when this server is spawned by the stdio shim (--managed-by),
+# the shim keepalive-pings GET /alive. If the pings go stale (or the shim dies), the
+# server shuts itself down. _keepalive_ts holds the monotonic time of the last ping.
+_keepalive_ts: list[float] = [0.0]
+MANAGED_GRACE_SECONDS = 60
 
 # Active pack per tool_name — looked up dynamically by handlers.
 # Updated after background setup completes so selections take effect without restart.
@@ -152,111 +165,22 @@ def _resolve_image_path(path_or_url: str) -> tuple[str, bool]:
     return path_or_url, False
 
 
-# ── DXT-mode subprocess helpers (not used in HTTP mode) ───────────────
-
-def _get_python_and_cwd() -> tuple[str, str]:
-    """Get Python executable and cwd for setup_ui subprocesses (DXT mode only)."""
-    return sys.executable, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-_SETUP_LOCKFILE = os.path.join(_EXT_DIR, ".setup_running.lock")
-
-
-def _is_setup_locked() -> bool:
-    """Check if another instance is already running the setup UI."""
-    if os.path.isfile(_SETUP_LOCKFILE):
-        try:
-            age = time.time() - os.path.getmtime(_SETUP_LOCKFILE)
-            if age > 300:
-                log.warning("Stale setup lockfile (%.0fs old), removing", age)
-                os.remove(_SETUP_LOCKFILE)
-                return False
-        except OSError:
-            pass
-        log.info("Setup lockfile exists — another instance is handling setup")
-        return True
-    return False
-
-
-def _launch_setup_background(*setup_args: str):
-    """Launch a setup_ui subprocess in a background thread (DXT mode only, non-blocking)."""
-    global setup_running
-
-    if _is_setup_locked():
-        return
-
-    setup_running = True
-    try:
-        with open(_SETUP_LOCKFILE, "w") as f:
-            f.write(str(os.getpid()))
-    except OSError:
-        pass
-
-    def _run():
-        global setup_running, models_dir, comfyui_url
-        try:
-            python, cwd = _get_python_and_cwd()
-            args = [python, "-m", "server.setup_ui"] + list(setup_args)
-            log.info("Setup UI command: %s (cwd=%s)", args, cwd)
-            result = subprocess.run(args, cwd=cwd)
-            log.info("Setup UI exited with code %d", result.returncode)
-            from server.config import load_local_config
-            post_cfg = load_local_config()
-            if post_cfg.get("comfyui_url"):
-                comfyui_url = post_cfg["comfyui_url"]
-            if comfy_cli_path:
-                models_dir = find_models_dir(comfy_cli_path)
-            log.info("Post-setup: url=%s, models_dir=%s", comfyui_url, models_dir or "NOT FOUND")
-            # Re-resolve pack selections so the wizard's choices take effect immediately
-            all_packs = load_all_packs(MODEL_PACKS_DIR)
-            if all_packs:
-                groups = group_packs_by_tool(all_packs)
-                new_packs = resolve_pack_selections(groups, env_reader=_env)
-                for p in new_packs:
-                    _active_packs[p["tool_name"]] = p
-                log.info("Post-setup resolved packs: %s", [p["name"] for p in new_packs])
-        except Exception as e:
-            log.error("Setup UI failed: %s", e)
-        finally:
-            setup_running = False
-            try:
-                os.remove(_SETUP_LOCKFILE)
-            except OSError:
-                pass
-            log.info("Background setup finished.")
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-
-
 def _launch_download(pack: dict):
-    """Download a model pack's files (blocking). Shows UI where possible."""
+    """Download a model pack's files (blocking). Shows the Qt download dialog if a server
+    window is up, otherwise downloads silently."""
     title = f"Downloading {pack.get('display_name', 'model')} files..."
     pack_models = pack.get("models", [])
 
-    if is_http_mode() and _server_window is not None:
-        # HTTP mode: signal the main Qt thread to show the download dialog
+    if _server_window is not None:
+        # Signal the main Qt thread to show the download dialog
         log.info("Requesting download UI via main thread signal for %s", pack["name"])
         _server_window.request_download(models_dir or "", pack_models, title)
-    elif is_http_mode():
-        # HTTP mode but no server window yet — download silently
+    else:
+        # No server window yet — download silently
         from server.downloader import DownloadState, download_models
         log.info("No server window available, downloading silently for %s", pack["name"])
         state = DownloadState()
         download_models(models_dir or "", pack_models, state)
-    else:
-        # DXT/stdio mode: launch download UI as subprocess
-        pack_path = pack.get("_source_path")
-        if not pack_path:
-            log.error("No source path for pack %s, cannot launch download UI", pack["name"])
-            return
-        python, cwd = _get_python_and_cwd()
-        args = [python, "-m", "server.setup_ui", "--download", models_dir or "", pack_path]
-        try:
-            log.info("Download UI command: %s (cwd=%s)", args, cwd)
-            subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-        except Exception as e:
-            log.error("Failed to launch download UI: %s", e)
 
 
 def _download_in_background(pack: dict):
@@ -279,7 +203,202 @@ def _download_in_background(pack: dict):
     t.start()
 
 
+# ── Per-request preflight helpers ─────────────────────────────────────
+
+def _check_and_download_models(pack: dict) -> str | None:
+    """Ensure a pack's models are present, kicking off a background download if not.
+
+    Returns None when models are ready, or a user-facing message string when the
+    models directory is missing or a download is now in progress.
+    """
+    if not models_dir:
+        log.warning("No models directory found")
+        return (
+            "Cannot find ComfyUI's models directory. "
+            "Please run the first-time setup to install ComfyUI, then try again."
+        )
+    if check_models_present(models_dir, pack):
+        return None
+    pack_name = pack["display_name"]
+    log.info("Models missing for %s, launching download...", pack_name)
+    _download_in_background(pack)  # no-ops if a download is already running
+    return (
+        f"Models for {pack_name} are being downloaded. "
+        "A download progress window should be open — check your taskbar. "
+        "If you don't see it, restart Claude Desktop to re-trigger the setup. "
+        "Please try again once the download completes."
+    )
+
+
+def _ensure_comfyui() -> str | None:
+    """Ensure ComfyUI is reachable, launching it via comfy-cli if needed.
+
+    Updates the comfyui_url / comfyui_process globals. Returns None on success,
+    or a user-facing error message string on failure.
+    """
+    global comfyui_process, comfyui_url
+
+    log.info("Scanning for ComfyUI (comfyui_url=%s)...", comfyui_url)
+    found_url = find_comfyui_url(comfyui_url)
+    log.info("find_comfyui_url returned: %s", found_url)
+    if found_url:
+        comfyui_url = found_url
+        return None
+
+    log.info("ComfyUI not found, attempting launch... (comfy_cli=%s)", comfy_cli_path)
+    if not comfy_cli_path:
+        log.error("comfy-cli not available, cannot auto-launch")
+        return (
+            "ComfyUI is not running and comfy-cli was not found to launch it.\n\n"
+            "Install comfy-cli with: pip install comfy-cli"
+        )
+    try:
+        comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
+    except (TimeoutError, RuntimeError) as e:
+        log.error("ComfyUI launch failed: %s", e)
+        return (
+            f"Error: {e}\n\n"
+            "If this error persists, try stopping any running ComfyUI processes and retrying."
+        )
+    return None
+
+
+async def _run_generation(prompt: str, pack: dict, aspect_ratio: str) -> CallToolResult:
+    """Create, start, store, and await a ComfyJob for the given pack."""
+    ComfyJob.cleanup_old(_jobs)
+    job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
+    job.start()
+    _jobs[job.token] = job
+    return await wait_for_job(job, _get_output_dir())
+
+
 # ── Startup ───────────────────────────────────────────────────────────
+
+def _apply_loras_to_pack(pack: dict) -> None:
+    """Apply per-pack LoRAs from local_config.json (anima pack only, model-only).
+
+    Mutates pack['workflow'] in place. Malformed entries and injection failures are
+    logged and skipped rather than failing startup.
+    """
+    raw_loras = load_local_config().get("pack_loras", {}).get(pack["name"])
+    if raw_loras and pack["name"] != "anima":
+        log.warning("Pack '%s': pack_loras configured but LoRAs are only supported for "
+                    "the 'anima' pack — ignoring", pack["name"])
+        return
+    if not raw_loras:
+        return
+
+    loras = []
+    for entry in raw_loras:
+        if isinstance(entry, str):
+            entry = {"name": entry}
+        if not isinstance(entry, dict) or not entry.get("name"):
+            log.warning("Pack '%s': skipping malformed LoRA entry %r", pack["name"], entry)
+            continue
+        name = entry["name"]
+        try:
+            strength = float(entry.get("strength", 1.0))
+        except (TypeError, ValueError):
+            log.warning("Pack '%s': invalid strength for LoRA '%s', using 1.0", pack["name"], name)
+            strength = 1.0
+        if models_dir and not os.path.isfile(os.path.join(models_dir, "loras", name)):
+            log.warning(
+                "Pack '%s': LoRA file not found in models/loras: %s (generation will fail "
+                "until you place it there)", pack["name"], name
+            )
+        loras.append({"name": name, "strength": strength})
+
+    if loras:
+        try:
+            inject_loras(pack["workflow"], loras, pack.get("lora_target"))
+            log.info(
+                "Pack '%s': injected %d LoRA(s): %s", pack["name"], len(loras),
+                ", ".join(f"{l['name']}@{l['strength']}" for l in loras)
+            )
+        except Exception as e:
+            log.error("Pack '%s': failed to inject LoRAs (%s); serving pack unmodified", pack["name"], e)
+
+
+def _apply_pack_customizations(packs: list[dict], anima_artists: str | None,
+                               anima_steps: str | None) -> None:
+    """Apply artist-list substitution, the anima step override, and LoRA injection to each
+    resolved pack (mutates packs in place)."""
+    for pack in packs:
+        if pack.get("default_artist_list"):
+            local_cfg = load_local_config()
+            artists_str = (
+                anima_artists
+                or local_cfg.get("pack_settings", {}).get(pack["name"], {}).get("artist_list")
+                or pack["default_artist_list"]
+            )
+            parts = [a.strip() for a in artists_str.split(",") if a.strip()]
+            if parts:
+                preferred = parts[0]
+                others = ", ".join(parts[1:]) if len(parts) > 1 else "none"
+                artist_display = f"preferred default: {preferred}, others available: {others}"
+            else:
+                artist_display = artists_str
+            log.info("Pack '%s' artist_list: %s", pack["name"], artists_str)
+            pack["tool_description"] = pack["tool_description"].replace("{artist_list}", artist_display)
+
+        if pack["name"] == "anima" and anima_steps:
+            try:
+                steps = int(anima_steps)
+                pack["workflow"]["19"]["inputs"]["steps"] = steps
+                log.info("Pack 'anima' steps overridden to %d", steps)
+            except ValueError:
+                log.warning("Invalid ANIMA_STEPS value '%s', keeping default", anima_steps)
+
+        _apply_loras_to_pack(pack)
+
+
+def _load_custom_pack(custom_workflow: str | None,
+                      prompt_node_title: str | None) -> tuple[dict | None, str | None]:
+    """Load the user's custom workflow as a synthetic pack. Returns (custom_pack, error)."""
+    if not custom_workflow:
+        return None, None
+    if not os.path.isfile(custom_workflow):
+        log.warning("Custom workflow path not found: %s", custom_workflow)
+        return None, f"Custom workflow file not found: {custom_workflow}"
+
+    log.info("Loading custom workflow: %s", custom_workflow)
+    try:
+        wf, pnid, snids = load_custom_workflow(custom_workflow, prompt_node_title)
+    except ValueError as exc:
+        log.error("Failed to load custom workflow: %s", exc)
+        return None, str(exc)
+
+    custom_pack = {
+        "name": "custom",
+        "display_name": "Custom Workflow",
+        "tool_name": "generate_custom_image",
+        "tool_description": (
+            "Generate an image using a user-provided custom ComfyUI workflow. "
+            "Use natural language to describe the image. "
+            "The aspect_ratio parameter controls image shape: "
+            "square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square."
+        ),
+        "workflow": wf,
+        "prompt_node_id": pnid,
+        "seed_nodes": [{"node_id": sid, "field": "seed"} for sid in snids],
+        "models": [],
+    }
+    log.info("Custom workflow loaded: prompt_node=%s, samplers=%s", pnid, snids)
+    return custom_pack, None
+
+
+def _launch_comfyui_background() -> None:
+    """Warm up ComfyUI in a background thread so it's ready before the first tool call.
+    Non-fatal: if it isn't up yet, tools retry via _ensure_comfyui() on demand."""
+    if not comfy_cli_path:
+        return
+
+    def _bg():
+        if _ensure_comfyui():
+            log.warning("ComfyUI not ready at startup (will retry on first request)")
+
+    threading.Thread(target=_bg, daemon=True).start()
+
 
 def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | None]:
     """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
@@ -289,12 +408,14 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     custom_workflow = _env("CUSTOM_WORKFLOW")
     custom_workflow_prompt_node_title = _env("CUSTOM_WORKFLOW_PROMPT_NODE")
     anima_artists = _env("ANIMA_ARTISTS")
+    anima_steps = _env("ANIMA_STEPS")
 
     log.info("=== Comfy-Gen-MCP startup ===")
     log.info("Mode: %s", "HTTP" if is_http_mode() else "DXT/stdio")
     log.info("COMFYUI_URL=%s", comfyui_url)
     log.info("CUSTOM_WORKFLOW=%s", custom_workflow or "(none)")
     log.info("ANIMA_ARTISTS=%s", anima_artists or "(default)")
+    log.info("ANIMA_STEPS=%s", anima_steps or "(default: 30)")
 
     # Detect comfy-cli and ComfyUI
     comfy_cli_path = find_comfy_cli()
@@ -315,7 +436,6 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
             log.info("Tool '%s' has %d packs: %s", tool_name, len(group), [p["name"] for p in group])
 
     # First-run or ComfyUI-missing setup
-    from server.config import load_local_config
     local_cfg = load_local_config()
 
     def _refresh_after_setup():
@@ -328,17 +448,13 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
 
     needs_setup = local_cfg.get("setup_version") != EXTENSION_VERSION or not models_dir
     if needs_setup:
-        if is_http_mode():
-            from server.ui import run_first_time_setup
-            log.info("Setup needed — launching wizard (blocking, in-process)...")
-            run_first_time_setup(all_packs, groups, in_process=True)
-            _refresh_after_setup()
-            if not models_dir:
-                log.error("ComfyUI models dir still not found after setup. Exiting.")
-                sys.exit(1)
-        else:
-            log.info("Setup needed — launching wizard in background...")
-            _launch_setup_background("--first-run", MODEL_PACKS_DIR)
+        from server.ui import run_first_time_setup
+        log.info("Setup needed — launching wizard (blocking, in-process)...")
+        run_first_time_setup(all_packs, groups, in_process=True)
+        _refresh_after_setup()
+        if not models_dir:
+            log.error("ComfyUI models dir still not found after setup. Exiting.")
+            sys.exit(1)
 
     # Resolve one pack per tool_name group based on user config
     packs = resolve_pack_selections(groups, env_reader=_env)
@@ -350,54 +466,13 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
         if len(groups.get(tool_name, [])) > 1 and pack.get("group_tool_description"):
             pack["tool_description"] = pack["group_tool_description"]
 
-    # Apply per-pack customizations
-    for pack in packs:
-        if pack.get("default_artist_list"):
-            local_cfg = load_local_config()
-            artists_str = (
-                anima_artists
-                or local_cfg.get("pack_settings", {}).get(pack["name"], {}).get("artist_list")
-                or pack["default_artist_list"]
-            )
-            parts = [a.strip() for a in artists_str.split(",") if a.strip()]
-            if parts:
-                preferred = parts[0]
-                others = ", ".join(parts[1:]) if len(parts) > 1 else "none"
-                artist_display = f"preferred default: {preferred}, others available: {others}"
-            else:
-                artist_display = artists_str
-            log.info("Pack '%s' artist_list: %s", pack["name"], artists_str)
-            pack["tool_description"] = pack["tool_description"].replace("{artist_list}", artist_display)
+    # Apply per-pack customizations (artist list, anima steps, LoRAs)
+    _apply_pack_customizations(packs, anima_artists, anima_steps)
 
     # Load custom workflow as a separate tool
-    custom_pack = None
-    custom_workflow_error = None
-    if custom_workflow and os.path.isfile(custom_workflow):
-        log.info("Loading custom workflow: %s", custom_workflow)
-        try:
-            wf, pnid, snids = load_custom_workflow(custom_workflow, custom_workflow_prompt_node_title)
-            custom_pack = {
-                "name": "custom",
-                "display_name": "Custom Workflow",
-                "tool_name": "generate_custom_image",
-                "tool_description": (
-                    "Generate an image using a user-provided custom ComfyUI workflow. "
-                    "Use natural language to describe the image. "
-                    "The aspect_ratio parameter controls image shape: "
-                    "square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square."
-                ),
-                "workflow": wf,
-                "prompt_node_id": pnid,
-                "seed_nodes": [{"node_id": sid, "field": "seed"} for sid in snids],
-                "models": [],
-            }
-            log.info("Custom workflow loaded: prompt_node=%s, samplers=%s", pnid, snids)
-        except ValueError as exc:
-            custom_workflow_error = str(exc)
-            log.error("Failed to load custom workflow: %s", exc)
-    elif custom_workflow:
-        custom_workflow_error = f"Custom workflow file not found: {custom_workflow}"
-        log.warning("Custom workflow path not found: %s", custom_workflow)
+    custom_pack, custom_workflow_error = _load_custom_pack(
+        custom_workflow, custom_workflow_prompt_node_title
+    )
 
     # Log model status
     for pack in packs:
@@ -408,24 +483,11 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])
 
     # Ensure ComfyUI-Manager is present before launching (needed for `comfy node install`)
-    if comfy_cli_path and not setup_running:
+    if comfy_cli_path:
         ensure_manager_installed(comfy_cli_path)
 
     # Launch ComfyUI in background so it's ready by the time a tool is called
-    if comfy_cli_path and not setup_running:
-        found_url = find_comfyui_url(comfyui_url)
-        if found_url:
-            comfyui_url = found_url
-            log.info("ComfyUI already running at %s", comfyui_url)
-        else:
-            def _launch_bg():
-                global comfyui_process, comfyui_url
-                try:
-                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
-                    log.info("ComfyUI launched at startup: %s", comfyui_url)
-                except (TimeoutError, RuntimeError) as e:
-                    log.warning("Failed to launch ComfyUI at startup: %s (will retry on first request)", e)
-            threading.Thread(target=_launch_bg, daemon=True).start()
+    _launch_comfyui_background()
 
     return packs, groups, custom_pack, custom_workflow_error
 
@@ -447,8 +509,6 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         ),
     )
     async def generate_custom_image(prompt: str, aspect_ratio: str = "square") -> CallToolResult:
-        global comfyui_process, comfyui_url
-
         if custom_pack is None:
             if custom_workflow_error:
                 msg = f"Custom workflow failed to load: {custom_workflow_error}"
@@ -463,25 +523,11 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
 
         log.info("generate_custom_image called, aspect=%s, prompt=%r", aspect_ratio, prompt[:100])
 
-        found_url = find_comfyui_url(comfyui_url)
-        if found_url:
-            comfyui_url = found_url
-        else:
-            if comfy_cli_path:
-                try:
-                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
-                except (TimeoutError, RuntimeError) as e:
-                    return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
-            else:
-                return CallToolResult(
-                    content=[TextContent(type="text", text="ComfyUI is not running and comfy-cli was not found. Install it with: pip install comfy-cli")]
-                )
+        err = _ensure_comfyui()
+        if err:
+            return CallToolResult(content=[TextContent(type="text", text=err)])
 
-        ComfyJob.cleanup_old(_jobs)
-        job = ComfyJob(prompt, custom_pack, aspect_ratio, comfyui_url)
-        job.start()
-        _jobs[job.token] = job
-        return await wait_for_job(job, _get_output_dir())
+        return await _run_generation(prompt, custom_pack, aspect_ratio)
 
     # Fetch result tool
     @mcp.tool(
@@ -529,8 +575,6 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         ),
     )
     async def edit_image(prompt: str, image_path: str, second_image_path: str = "") -> CallToolResult:
-        global comfyui_process, comfyui_url
-
         # Resolve URLs to local temp files
         temp_files = []
         try:
@@ -566,42 +610,13 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         use_multi = bool(second_image_path)
         log.info("edit_image called, multi=%s, path=%s, prompt=%r", use_multi, image_path, prompt[:100])
 
-        if not models_dir:
-            return CallToolResult(
-                content=[TextContent(type="text", text=(
-                    "Cannot find ComfyUI's models directory. "
-                    "Please run the first-time setup to install ComfyUI, then try again."
-                ))]
-            )
+        msg = _check_and_download_models(_edit_pack)
+        if msg:
+            return CallToolResult(content=[TextContent(type="text", text=msg)])
 
-        if not check_models_present(models_dir, _edit_pack):
-            pack_name = _edit_pack["display_name"]
-            if _downloading.get(_edit_pack["name"]):
-                log.info("Download already in progress for %s", pack_name)
-            else:
-                log.info("Models missing for %s, launching download...", pack_name)
-                _download_in_background(_edit_pack)
-            return CallToolResult(
-                content=[TextContent(type="text", text=(
-                    f"Models for {pack_name} are being downloaded. "
-                    "A download progress window should be open — check your taskbar. "
-                    "Please try again once the download completes."
-                ))]
-            )
-
-        found_url = find_comfyui_url(comfyui_url)
-        if found_url:
-            comfyui_url = found_url
-        else:
-            if comfy_cli_path:
-                try:
-                    comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
-                except (TimeoutError, RuntimeError) as e:
-                    return CallToolResult(content=[TextContent(type="text", text=f"Error: {e}")])
-            else:
-                return CallToolResult(
-                    content=[TextContent(type="text", text="ComfyUI is not running and comfy-cli was not found. Install it with: pip install comfy-cli")]
-                )
+        err = _ensure_comfyui()
+        if err:
+            return CallToolResult(content=[TextContent(type="text", text=err)])
 
         required = _edit_pack.get("required_nodes")
         if required:
@@ -650,82 +665,21 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             "seed_nodes": seed_nodes,
         }
 
-        ComfyJob.cleanup_old(_jobs)
-        job = ComfyJob(prompt, edit_job_pack, "square", comfyui_url)
-        job.start()
-        _jobs[job.token] = job
-        return await wait_for_job(job, _get_output_dir())
+        return await _run_generation(prompt, edit_job_pack, "square")
 
     # Per-pack tools
     def _make_handler(tool_name: str):
         async def handler(prompt: str, aspect_ratio: str = "square") -> CallToolResult:
-            global comfyui_process, comfyui_url
-
             pack = _active_packs[tool_name]
             log.info("%s called (pack=%s), aspect=%s, prompt=%r", tool_name, pack["name"], aspect_ratio, prompt[:100])
 
-            if setup_running:
-                log.warning("Setup still running, rejecting request")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=(
-                        "First-time setup is still in progress. "
-                        "A setup window should be open — check your taskbar. "
-                        "If you don't see it, restart Claude Desktop to re-trigger the setup. "
-                        "Please try again once setup is complete."
-                    ))]
-                )
+            msg = _check_and_download_models(pack)
+            if msg:
+                return CallToolResult(content=[TextContent(type="text", text=msg)])
 
-            if not models_dir:
-                log.warning("No models directory found")
-                return CallToolResult(
-                    content=[TextContent(type="text", text=(
-                        "Cannot find ComfyUI's models directory. "
-                        "Please run the first-time setup to install ComfyUI, then try again."
-                    ))]
-                )
-
-            if not check_models_present(models_dir, pack):
-                pack_name = pack["display_name"]
-                if _downloading.get(pack["name"]):
-                    log.info("Download already in progress for %s", pack_name)
-                else:
-                    log.info("Models missing for %s, launching download...", pack_name)
-                    _download_in_background(pack)
-                return CallToolResult(
-                    content=[TextContent(type="text", text=(
-                        f"Models for {pack_name} are being downloaded. "
-                        "A download progress window should be open — check your taskbar. "
-                        "If you don't see it, restart Claude Desktop to re-trigger the setup. "
-                        "Please try again once the download completes."
-                    ))]
-                )
-
-            log.info("Scanning for ComfyUI (comfyui_url=%s)...", comfyui_url)
-            found_url = find_comfyui_url(comfyui_url)
-            log.info("find_comfyui_url returned: %s", found_url)
-            if found_url:
-                comfyui_url = found_url
-            else:
-                log.info("ComfyUI not found, attempting launch... (comfy_cli=%s)", comfy_cli_path)
-                if comfy_cli_path:
-                    try:
-                        comfyui_process, comfyui_url = launch_comfyui(comfy_cli_path)
-                    except (TimeoutError, RuntimeError) as e:
-                        log.error("ComfyUI launch failed: %s", e)
-                        return CallToolResult(
-                            content=[TextContent(type="text", text=(
-                                f"Error: {e}\n\n"
-                                "If this error persists, try stopping any running ComfyUI processes and retrying."
-                            ))]
-                        )
-                else:
-                    log.error("comfy-cli not available, cannot auto-launch")
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=(
-                            "ComfyUI is not running and comfy-cli was not found to launch it.\n\n"
-                            "Install comfy-cli with: pip install comfy-cli"
-                        ))]
-                    )
+            err = _ensure_comfyui()
+            if err:
+                return CallToolResult(content=[TextContent(type="text", text=err)])
 
             required = pack.get("required_nodes")
             if required:
@@ -733,11 +687,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
                 if node_err:
                     return CallToolResult(content=[TextContent(type="text", text=node_err)])
 
-            ComfyJob.cleanup_old(_jobs)
-            job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
-            job.start()
-            _jobs[job.token] = job
-            return await wait_for_job(job, _get_output_dir())
+            return await _run_generation(prompt, pack, aspect_ratio)
         return handler
 
     for pack in packs:
@@ -750,115 +700,164 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
 
 # ── Main ──────────────────────────────────────────────────────────────
 
-def main():
+def _parse_args():
     parser = argparse.ArgumentParser(description="Comfy-Gen-MCP Server")
     parser.add_argument("--http", action="store_true", help="Run as HTTP connector instead of stdio (DXT)")
     parser.add_argument("-p", "--port", type=int, default=9247, help="HTTP server port (default: 9247)")
     parser.add_argument("-t", "--tunnel", nargs="?", const="temp", help="Start a cloudflare tunnel (HTTP mode only)")
-    args = parser.parse_args()
+    parser.add_argument("--managed-by", type=int, default=None,
+                        help="PID of the stdio shim that spawned this server (enables managed lifecycle: "
+                             "local-only, self-shutdown when the shim's keepalive goes stale)")
+    return parser.parse_args()
 
-    # In HTTP mode, inject settings from local_config.json into env vars
-    if is_http_mode():
-        from server.config import ensure_user_settings, load_local_config, save_local_config
-        local_cfg = load_local_config()
-        if ensure_user_settings(local_cfg):
-            save_local_config(local_cfg)
-            log.info("Seeded missing user settings in local_config.json")
-        env_map = {
-            "COMFYUI_URL": "comfyui_url",
-            "CUSTOM_WORKFLOW": "custom_workflow",
-            "CUSTOM_WORKFLOW_PROMPT_NODE": "custom_workflow_prompt_node",
-            "ANIMA_ARTISTS": "anima_artists",
-        }
-        for env_key, cfg_key in env_map.items():
-            val = local_cfg.get(cfg_key)
-            if val and env_key not in os.environ:
-                os.environ[env_key] = val
 
-    # Startup: detect ComfyUI, load packs, run first-time setup if needed
-    packs, groups, custom_pack, custom_workflow_error = startup()
+def _seed_env_from_config() -> None:
+    """Seed missing user settings into local_config.json, then export configured values as
+    env vars so startup() picks them up. Env vars already set take precedence."""
+    local_cfg = load_local_config()
+    if ensure_user_settings(local_cfg):
+        save_local_config(local_cfg)
+        log.info("Seeded missing user settings in local_config.json")
+    # ANIMA_ARTISTS is intentionally NOT seeded here: artists are configured per-pack via
+    # pack_settings.anima.artist_list (Settings panel). ANIMA_ARTISTS stays a power-user
+    # env override that, when unset, lets the per-pack value take effect.
+    env_map = {
+        "COMFYUI_URL": "comfyui_url",
+        "CUSTOM_WORKFLOW": "custom_workflow",
+        "CUSTOM_WORKFLOW_PROMPT_NODE": "custom_workflow_prompt_node",
+        "ANIMA_STEPS": "anima_steps",
+    }
+    for env_key, cfg_key in env_map.items():
+        val = local_cfg.get(cfg_key)
+        if val and env_key not in os.environ:
+            os.environ[env_key] = str(val)  # env values must be strings (anima_steps is int)
 
-    # Create FastMCP
-    if is_http_mode():
-        from server.config import load_local_config, save_local_config
-        local_cfg = load_local_config()
 
-        mcp_path = local_cfg.get("mcp_path")
-        if not mcp_path:
-            mcp_path = f"/mcp/{secrets.token_urlsafe(32)}"
-            local_cfg["mcp_path"] = mcp_path
-            save_local_config(local_cfg)
-            log.info("Generated new MCP path (saved to local_config.json)")
+def _build_http_app(args) -> tuple[FastMCP, str]:
+    """Create the FastMCP app for HTTP mode, including the /alive liveness route.
+    Returns (mcp, mcp_path)."""
+    local_cfg = load_local_config()
+    mcp_path = local_cfg.get("mcp_path")
+    if not mcp_path:
+        mcp_path = f"/mcp/{secrets.token_urlsafe(32)}"
+        local_cfg["mcp_path"] = mcp_path
+        save_local_config(local_cfg)
+        log.info("Generated new MCP path (saved to local_config.json)")
 
-        mcp = FastMCP(
-            "Comfy-Gen-MCP",
-            stateless_http=True,
-            json_response=True,
-            host="0.0.0.0",
-            port=args.port,
-            streamable_http_path=mcp_path,
-        )
-        log.info("HTTP mode: port=%d, path=%s", args.port, mcp_path)
+    mcp = FastMCP(
+        "Comfy-Gen-MCP",
+        stateless_http=True,
+        json_response=True,
+        host="0.0.0.0",
+        port=args.port,
+        streamable_http_path=mcp_path,
+    )
+    log.info("HTTP mode: port=%d, path=%s", args.port, mcp_path)
+
+    # Liveness + keepalive endpoint. The shim polls this to know the server is up,
+    # and (in managed mode) pings it to keep the server alive.
+    _keepalive_ts[0] = time.monotonic()
+
+    @mcp.custom_route("/alive", methods=["GET"])
+    async def _alive(request):
+        from starlette.responses import PlainTextResponse
+        _keepalive_ts[0] = time.monotonic()
+        return PlainTextResponse("ok")
+
+    return mcp, mcp_path
+
+
+def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
+    """Run the HTTP server: optional tunnel, the MCP server thread, then the Qt window on the
+    main thread (blocks until quit), then ComfyUI/tunnel cleanup."""
+    from server.tunnel import start_cloudflare_tunnel
+    from server.ui import show_tunnel_choice, show_url_window, show_server_running_window, run_with_progress
+
+    local_cfg = load_local_config()
+
+    # Determine tunnel mode. A shim-managed server is always local-only (no prompt).
+    managed = args.managed_by is not None
+    tunnel_proc = None
+    if managed:
+        use_tunnel = False
     else:
-        mcp = FastMCP("Comfy-Gen-MCP")
-
-    # Register all tools
-    register_tools(mcp, packs, custom_pack, custom_workflow_error)
-
-    # ── Run ───────────────────────────────────────────────────────
-    if is_http_mode():
-        from server.tunnel import start_cloudflare_tunnel
-        from server.ui import show_tunnel_choice, show_url_window, show_server_running_window, run_with_progress
-        from server.config import load_local_config, save_local_config
-        local_cfg = load_local_config()
-        mcp_path = local_cfg.get("mcp_path", "/mcp")
-
-        # Determine tunnel mode
-        tunnel_proc = None
         use_tunnel = args.tunnel is not None
         if not use_tunnel and "use_tunnel" in local_cfg:
             use_tunnel = local_cfg["use_tunnel"]
         elif not use_tunnel and args.tunnel is None:
             use_tunnel = show_tunnel_choice(local_cfg, save_local_config)
 
-        # Start tunnel if needed
-        full_url = None
-        if use_tunnel:
-            try:
-                def _start_tunnel():
-                    return start_cloudflare_tunnel(args.port)
-                tunnel_proc, tunnel_url = run_with_progress("Starting cloudflare tunnel...", _start_tunnel)
-                full_url = f"{tunnel_url}{mcp_path}"
-                log.info("Tunnel URL: %s", full_url)
-            except RuntimeError as e:
-                log.error("Tunnel failed: %s", e)
+    # Start tunnel if needed
+    full_url = None
+    if use_tunnel:
+        try:
+            def _start_tunnel():
+                return start_cloudflare_tunnel(args.port)
+            tunnel_proc, tunnel_url = run_with_progress("Starting cloudflare tunnel...", _start_tunnel)
+            full_url = f"{tunnel_url}{mcp_path}"
+            log.info("Tunnel URL: %s", full_url)
+        except RuntimeError as e:
+            log.error("Tunnel failed: %s", e)
 
-        # Start MCP server in background daemon thread
-        server_thread = threading.Thread(
-            target=lambda: mcp.run(transport="streamable-http"),
-            daemon=True,
-        )
-        server_thread.start()
-        log.info("MCP server started in background on port %d", args.port)
+    # Start MCP server in background daemon thread
+    server_thread = threading.Thread(
+        target=lambda: mcp.run(transport="streamable-http"),
+        daemon=True,
+    )
+    server_thread.start()
+    log.info("MCP server started in background on port %d", args.port)
 
-        # Main thread: Qt window (blocks until Quit from tray)
-        def _store_window(w):
-            global _server_window
-            _server_window = w
+    # Main thread: Qt window (blocks until Quit from tray)
+    def _store_window(w):
+        global _server_window
+        _server_window = w
 
-        if full_url:
-            show_url_window(full_url, on_ready=_store_window)
-        else:
-            show_server_running_window(args.port, mcp_path, on_ready=_store_window)
+    # In managed mode, the window self-closes when the shim's keepalive goes stale
+    # (or the shim process dies) — then the post-window cleanup below stops ComfyUI.
+    def _stale() -> bool:
+        if not managed:
+            return False
+        try:
+            import psutil
+            if not psutil.pid_exists(args.managed_by):
+                log.info("Managing shim (pid %d) is gone — shutting down", args.managed_by)
+                return True
+        except Exception:
+            pass
+        if time.monotonic() - _keepalive_ts[0] > MANAGED_GRACE_SECONDS:
+            log.info("Shim keepalive stale (>%ds) — shutting down", MANAGED_GRACE_SECONDS)
+            return True
+        return False
 
-        # Window closed → cleanup → exit
-        log.info("Window closed, shutting down...")
-        if tunnel_proc:
-            tunnel_proc.kill()
-        if comfy_cli_path:
-            stop_comfyui(comfy_cli_path, comfyui_process)
+    if full_url:
+        show_url_window(full_url, on_ready=_store_window, stale_check=_stale)
     else:
-        mcp.run(transport="stdio")
+        show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale)
+
+    # Window closed → cleanup → exit
+    log.info("Window closed, shutting down...")
+    if tunnel_proc:
+        tunnel_proc.kill()
+    if comfy_cli_path:
+        stop_comfyui(comfy_cli_path, comfyui_process)
+
+
+def main():
+    args = _parse_args()
+
+    # DXT/stdio entry: run the thin shim, which starts the real HTTP server (if needed)
+    # and proxies MCP calls to it. All real logic lives in the HTTP server below.
+    if not is_http_mode():
+        from server.shim import run as run_shim
+        run_shim()
+        return
+
+    # ── HTTP server: the one real runtime ─────────────────────────────
+    _seed_env_from_config()
+    packs, _groups, custom_pack, custom_workflow_error = startup()
+    mcp, mcp_path = _build_http_app(args)
+    register_tools(mcp, packs, custom_pack, custom_workflow_error)
+    _run_http_server(mcp, args, mcp_path)
 
 
 if __name__ == "__main__":

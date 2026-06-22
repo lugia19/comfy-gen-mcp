@@ -63,6 +63,101 @@ def build_prompt(
     return wf
 
 
+# Model-loader class types and the output index that carries MODEL. LoRAs are applied to
+# the model path only (CLIP is left untouched), so only model loaders matter here.
+MODEL_LOADERS: dict[str, int] = {
+    "UNETLoader": 0,
+    "UnetLoaderGGUF": 0,
+    "CheckpointLoaderSimple": 0,
+    "CheckpointLoader": 0,
+}
+
+
+def _find_loader_source(workflow: dict, loaders: dict[str, int]) -> list | None:
+    """Return the [node_id, output_index] link for the first matching loader node, or None."""
+    for node_id, node in workflow.items():
+        idx = loaders.get(node.get("class_type"))
+        if idx is not None:
+            return [node_id, idx]
+    return None
+
+
+def _next_node_id(workflow: dict) -> int:
+    """Return an integer node id guaranteed not to collide with existing keys."""
+    highest = 0
+    for key in workflow:
+        try:
+            highest = max(highest, int(key))
+        except (TypeError, ValueError):
+            continue
+    return highest + 1
+
+
+def _consumers_of(workflow: dict, source: list) -> list[tuple[str, str]]:
+    """Find every (node_id, input_key) whose input link equals *source*.
+
+    A link in ComfyUI API format is a ``[node_id, output_index]`` pair, so matching
+    on the exact pair pins it to the MODEL output of the loader.
+    """
+    matches = []
+    for node_id, node in workflow.items():
+        for key, val in node.get("inputs", {}).items():
+            if isinstance(val, list) and len(val) == 2 and val[0] == source[0] and val[1] == source[1]:
+                matches.append((node_id, key))
+    return matches
+
+
+def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) -> dict:
+    """Splice a chain of LoraLoaderModelOnly nodes onto the model path, mutating in place.
+
+    Each entry in *loras* is ``{"name": str, "strength": float}`` (strength defaults to
+    1.0). LoRAs are applied to the **model only** — CLIP is never touched. The chain is
+    inserted immediately after the model loader, and every downstream MODEL consumer is
+    rewired to read from the chain's output.
+
+    *target* optionally overrides auto-detection: ``{"model": [id, idx]}``.
+
+    Raises ValueError if no model source can be found.
+    """
+    if not loras:
+        return workflow
+
+    target = target or {}
+    model_src = target.get("model") or _find_loader_source(workflow, MODEL_LOADERS)
+    if model_src is None:
+        raise ValueError(
+            "Could not locate a model loader to attach LoRAs to. "
+            f"Known loaders: {sorted(MODEL_LOADERS)}. "
+            "Set a 'lora_target' override in the pack JSON if this workflow is non-standard."
+        )
+
+    # Record downstream consumers *before* splicing, so we don't rewire the new nodes.
+    model_consumers = _consumers_of(workflow, model_src)
+
+    next_id = _next_node_id(workflow)
+    model_head = model_src
+    for lora in loras:
+        strength = float(lora.get("strength", 1.0))
+        node_id = str(next_id)
+        next_id += 1
+        workflow[node_id] = {
+            "inputs": {
+                "lora_name": lora["name"],
+                "strength_model": strength,
+                "model": model_head,
+            },
+            "class_type": "LoraLoaderModelOnly",
+            "_meta": {"title": "Load LoRA (injected)"},
+        }
+        model_head = [node_id, 0]
+
+    # Rewire the original MODEL consumers to the end of the chain.
+    for node_id, key in model_consumers:
+        workflow[node_id]["inputs"][key] = model_head
+
+    return workflow
+
+
 def load_custom_workflow(path: str, prompt_node_title: str | None = None) -> tuple[dict, str, list[str]]:
     """Load a custom workflow JSON, returning (workflow, prompt_node_id, sampler_node_ids).
 

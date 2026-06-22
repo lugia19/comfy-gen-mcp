@@ -94,27 +94,21 @@ class ComfyJob:
                         self._drain_websocket(ws)
 
                     # Check queue status
-                    try:
-                        qresp = httpx.get(f"{self.comfyui_url}/queue", timeout=3)
-                        if qresp.status_code == 200:
-                            queue = qresp.json()
-                            running_ids = [item[1] for item in queue.get("queue_running", [])]
-                            pending_ids = [item[1] for item in queue.get("queue_pending", [])]
-
-                            if self.prompt_id in running_ids:
-                                self.status = "running"
-                                if poll_count % 10 == 0:
-                                    log.info("Job %s running (poll #%d)", self.token, poll_count)
-                            elif self.prompt_id in pending_ids:
-                                pos = pending_ids.index(self.prompt_id) + 1
-                                if poll_count % 10 == 0:
-                                    log.info("Job %s pending, position %d/%d (poll #%d)",
-                                             self.token, pos, len(pending_ids), poll_count)
-                            else:
-                                log.info("Job %s left queue after %d polls", self.token, poll_count)
-                                break
-                    except Exception as e:
-                        log.debug("Job %s: queue poll failed: %s", self.token, e)
+                    ids = self._get_queue_ids()
+                    if ids is not None:
+                        running_ids, pending_ids = ids
+                        if self.prompt_id in running_ids:
+                            self.status = "running"
+                            if poll_count % 10 == 0:
+                                log.info("Job %s running (poll #%d)", self.token, poll_count)
+                        elif self.prompt_id in pending_ids:
+                            pos = pending_ids.index(self.prompt_id) + 1
+                            if poll_count % 10 == 0:
+                                log.info("Job %s pending, position %d/%d (poll #%d)",
+                                         self.token, pos, len(pending_ids), poll_count)
+                        else:
+                            log.info("Job %s left queue after %d polls", self.token, poll_count)
+                            break
 
                     poll_count += 1
                     time.sleep(1)
@@ -195,6 +189,20 @@ class ComfyJob:
             except Exception:
                 break  # timeout or closed — no more messages
 
+    def _get_queue_ids(self) -> tuple[list, list] | None:
+        """Fetch ComfyUI's queue, returning (running_prompt_ids, pending_prompt_ids),
+        or None if the queue can't be read."""
+        try:
+            resp = httpx.get(f"{self.comfyui_url}/queue", timeout=3)
+            if resp.status_code != 200:
+                return None
+            queue = resp.json()
+            running_ids = [item[1] for item in queue.get("queue_running", [])]
+            pending_ids = [item[1] for item in queue.get("queue_pending", [])]
+            return running_ids, pending_ids
+        except Exception:
+            return None
+
     def get_status_message(self) -> str:
         """Human-readable status string for timeout messages."""
         # Websocket progress takes priority
@@ -205,20 +213,14 @@ class ComfyJob:
 
         # Fall back to queue position check
         if self.prompt_id:
-            try:
-                resp = httpx.get(f"{self.comfyui_url}/queue", timeout=3)
-                if resp.status_code == 200:
-                    queue = resp.json()
-                    running_ids = [item[1] for item in queue.get("queue_running", [])]
-                    pending_ids = [item[1] for item in queue.get("queue_pending", [])]
-
-                    if self.prompt_id in running_ids:
-                        return "Currently being generated"
-                    if self.prompt_id in pending_ids:
-                        pos = pending_ids.index(self.prompt_id) + 1
-                        return f"Position {pos} of {len(pending_ids)} in queue"
-            except Exception:
-                pass
+            ids = self._get_queue_ids()
+            if ids is not None:
+                running_ids, pending_ids = ids
+                if self.prompt_id in running_ids:
+                    return "Currently being generated"
+                if self.prompt_id in pending_ids:
+                    pos = pending_ids.index(self.prompt_id) + 1
+                    return f"Position {pos} of {len(pending_ids)} in queue"
 
         return "Generating..."
 

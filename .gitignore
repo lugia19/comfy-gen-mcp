@@ -6,3 +6,4 @@ dist/*
 comfyui-image-gen/server/__pycache__/*
 comfyui-image-gen/local_config.json
 comfyui-image-gen/server.log
+comfyui-image-gen/.tool_cache.json
