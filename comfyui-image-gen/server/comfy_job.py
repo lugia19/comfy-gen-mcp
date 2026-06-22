@@ -59,6 +59,7 @@ class ComfyJob:
                 dimension_nodes=self.pack.get("dimension_nodes"),
                 aspect_ratio=self.aspect_ratio,
                 max_pixels=self.pack.get("max_pixels", 1_048_576),
+                lora_toggles=self.pack.get("lora_toggles"),
             )
 
             # Submit to ComfyUI

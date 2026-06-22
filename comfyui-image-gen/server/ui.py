@@ -437,12 +437,14 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         layout.addWidget(artist_entry)
 
     # ── Anima LoRAs (list editor) ──
-    lora_rows: list[tuple[QComboBox, QDoubleSpinBox, QWidget]] = []
+    lora_rows: list[tuple[QComboBox, QDoubleSpinBox, QLineEdit, QWidget]] = []
     if anima_pack:
         layout.addWidget(_make_hline())
         layout.addWidget(QLabel("<b>Anima LoRAs</b>"))
         d = QLabel("Applied on top of the Anima model. Drop .safetensors into the loras "
-                   "folder, then add them here. Strength defaults to 1.0.")
+                   "folder, then add them here. A LoRA only applies when its trigger word is "
+                   "in the prompt (new LoRAs default the trigger to the filename) — clear the "
+                   "trigger to always apply it.")
         d.setWordWrap(True)
         d.setStyleSheet("color: gray;")
         layout.addWidget(d)
@@ -459,7 +461,8 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         lora_layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(lora_container)
 
-        def add_lora_row(name: str = "", strength: float = 1.0):
+        def add_lora_row(name: str = "", strength: float = 1.0, trigger: str = "",
+                         suggest_trigger: bool = False):
             row = QWidget()
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
@@ -476,24 +479,39 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             spin.setRange(-5.0, 5.0)
             spin.setSingleStep(0.1)
             spin.setValue(float(strength))
+            trigger_edit = QLineEdit(trigger)
+            trigger_edit.setPlaceholderText("trigger word (optional)")
             remove = QPushButton("Remove")
             remove.setFixedWidth(80)
-            entry = (combo, spin, row)
+            entry = (combo, spin, trigger_edit, row)
             remove.clicked.connect(lambda: (lora_rows.remove(entry), row.setParent(None)))
             rl.addWidget(combo)
             rl.addWidget(spin)
+            rl.addWidget(trigger_edit)
             rl.addWidget(remove)
             lora_layout.addWidget(row)
             lora_rows.append(entry)
 
+            # New rows default their trigger to the LoRA's filename (stem), auto-syncing as
+            # the file is changed — until the user edits the trigger themselves. Existing
+            # rows keep whatever was stored (empty = always-on).
+            if suggest_trigger:
+                touched = {"v": False}
+                stem = lambda: os.path.splitext(combo.currentText().strip())[0]
+                trigger_edit.setText(stem())
+                trigger_edit.textEdited.connect(lambda *_: touched.update(v=True))
+                combo.currentTextChanged.connect(
+                    lambda *_: None if touched["v"] else trigger_edit.setText(stem())
+                )
+
         for e in cfg.get("pack_loras", {}).get("anima", []):
             if isinstance(e, str):
                 e = {"name": e}
-            add_lora_row(e.get("name", ""), e.get("strength", 1.0))
+            add_lora_row(e.get("name", ""), e.get("strength", 1.0), e.get("trigger", ""))
 
         lora_btn_row = QHBoxLayout()
         add_btn = QPushButton("Add LoRA")
-        add_btn.clicked.connect(lambda: add_lora_row())
+        add_btn.clicked.connect(lambda: add_lora_row(suggest_trigger=True))
         open_loras_btn = QPushButton("Open LoRAs Folder")
         open_loras_btn.clicked.connect(lambda: _open_loras_folder(parent))
         lora_btn_row.addWidget(add_btn)
@@ -528,10 +546,14 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 c.setdefault("pack_settings", {}).setdefault("anima", {})["artist_list"] = val
         if anima_pack:
             loras = []
-            for combo, spin, _row in lora_rows:
+            for combo, spin, trigger_edit, _row in lora_rows:
                 name = combo.currentText().strip()
                 if name:
-                    loras.append({"name": name, "strength": round(float(spin.value()), 3)})
+                    entry = {"name": name, "strength": round(float(spin.value()), 3)}
+                    trigger = trigger_edit.text().strip()
+                    if trigger:
+                        entry["trigger"] = trigger
+                    loras.append(entry)
             c.setdefault("pack_loras", {})["anima"] = loras
         save_local_config(c)
         log.info("Settings saved to local_config.json")

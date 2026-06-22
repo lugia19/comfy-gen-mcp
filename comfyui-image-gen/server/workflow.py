@@ -35,11 +35,15 @@ def build_prompt(
     dimension_nodes: dict | None = None,
     aspect_ratio: str = "square",
     max_pixels: int = 1_048_576,
+    lora_toggles: list[dict] | None = None,
 ) -> dict:
     """Deep-copy workflow, inject prompt text, randomize seeds, and set dimensions.
 
     seed_nodes: [{"node_id": "19", "field": "seed"}, ...]
     dimension_nodes: {"width": [{"node_id": "28", "field": "width"}], "height": [...]}
+    lora_toggles: [{"node_id": "58", "trigger": "@mychar", "strength": 0.8}, ...] — each
+        conditional LoRA node is set to its strength only when its trigger is a
+        case-insensitive substring of the prompt, otherwise disabled (strength 0).
     """
     wf = copy.deepcopy(workflow)
     wf[prompt_node_id]["inputs"]["text"] = prompt_text
@@ -59,6 +63,17 @@ def build_prompt(
         for patch in dimension_nodes.get("height", []):
             if patch["node_id"] in wf:
                 wf[patch["node_id"]]["inputs"][patch["field"]] = h
+
+    # Toggle trigger-gated LoRAs: active strength only if the trigger is in the prompt.
+    if lora_toggles:
+        lowered = prompt_text.lower()
+        for tog in lora_toggles:
+            nid = tog["node_id"]
+            if nid not in wf:
+                continue
+            trigger = tog.get("trigger") or ""
+            active = (not trigger) or (trigger.lower() in lowered)
+            wf[nid]["inputs"]["strength_model"] = float(tog["strength"]) if active else 0.0
 
     return wf
 
@@ -107,20 +122,26 @@ def _consumers_of(workflow: dict, source: list) -> list[tuple[str, str]]:
     return matches
 
 
-def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) -> dict:
+def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) -> list[dict]:
     """Splice a chain of LoraLoaderModelOnly nodes onto the model path, mutating in place.
 
-    Each entry in *loras* is ``{"name": str, "strength": float}`` (strength defaults to
-    1.0). LoRAs are applied to the **model only** — CLIP is never touched. The chain is
-    inserted immediately after the model loader, and every downstream MODEL consumer is
-    rewired to read from the chain's output.
+    Each entry in *loras* is ``{"name": str, "strength": float, "trigger": str}`` (strength
+    defaults to 1.0; trigger is optional). LoRAs are applied to the **model only** — CLIP is
+    never touched. The chain is inserted immediately after the model loader, and every
+    downstream MODEL consumer is rewired to read from the chain's output.
+
+    Each node's ``strength_model`` is set to the configured (active) strength. For LoRAs with
+    a non-empty trigger, a toggle descriptor ``{"node_id", "trigger", "strength"}`` is
+    collected and returned so ``build_prompt`` can disable the node (strength 0) per request
+    when the trigger isn't present in the prompt. LoRAs without a trigger are always active
+    and are not returned.
 
     *target* optionally overrides auto-detection: ``{"model": [id, idx]}``.
 
     Raises ValueError if no model source can be found.
     """
     if not loras:
-        return workflow
+        return []
 
     target = target or {}
     model_src = target.get("model") or _find_loader_source(workflow, MODEL_LOADERS)
@@ -136,10 +157,13 @@ def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) 
 
     next_id = _next_node_id(workflow)
     model_head = model_src
+    toggles: list[dict] = []
     for lora in loras:
         strength = float(lora.get("strength", 1.0))
+        trigger = str(lora.get("trigger") or "").strip()
         node_id = str(next_id)
         next_id += 1
+        title = f"Load LoRA (injected{', trigger=' + trigger if trigger else ''})"
         workflow[node_id] = {
             "inputs": {
                 "lora_name": lora["name"],
@@ -147,15 +171,17 @@ def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) 
                 "model": model_head,
             },
             "class_type": "LoraLoaderModelOnly",
-            "_meta": {"title": "Load LoRA (injected)"},
+            "_meta": {"title": title},
         }
         model_head = [node_id, 0]
+        if trigger:
+            toggles.append({"node_id": node_id, "trigger": trigger, "strength": strength})
 
     # Rewire the original MODEL consumers to the end of the chain.
     for node_id, key in model_consumers:
         workflow[node_id]["inputs"][key] = model_head
 
-    return workflow
+    return toggles
 
 
 def load_custom_workflow(path: str, prompt_node_title: str | None = None) -> tuple[dict, str, list[str]]:

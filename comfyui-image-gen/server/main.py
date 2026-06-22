@@ -301,19 +301,23 @@ def _apply_loras_to_pack(pack: dict) -> None:
         except (TypeError, ValueError):
             log.warning("Pack '%s': invalid strength for LoRA '%s', using 1.0", pack["name"], name)
             strength = 1.0
+        trigger = str(entry.get("trigger") or "").strip()
         if models_dir and not os.path.isfile(os.path.join(models_dir, "loras", name)):
             log.warning(
                 "Pack '%s': LoRA file not found in models/loras: %s (generation will fail "
                 "until you place it there)", pack["name"], name
             )
-        loras.append({"name": name, "strength": strength})
+        loras.append({"name": name, "strength": strength, "trigger": trigger})
 
     if loras:
         try:
-            inject_loras(pack["workflow"], loras, pack.get("lora_target"))
+            pack["lora_toggles"] = inject_loras(pack["workflow"], loras, pack.get("lora_target"))
             log.info(
                 "Pack '%s': injected %d LoRA(s): %s", pack["name"], len(loras),
-                ", ".join(f"{l['name']}@{l['strength']}" for l in loras)
+                ", ".join(
+                    f"{l['name']}@{l['strength']}" + (f" [trigger: {l['trigger']}]" if l["trigger"] else "")
+                    for l in loras
+                )
             )
         except Exception as e:
             log.error("Pack '%s': failed to inject LoRAs (%s); serving pack unmodified", pack["name"], e)
