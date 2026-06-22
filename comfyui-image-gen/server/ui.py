@@ -1179,15 +1179,15 @@ class ServerWindow(QMainWindow):
             self._stale_poll.timeout.connect(self._check_stale)
             self._stale_poll.start(5000)
 
-        footer = QLabel("Closing this window hides it to the system tray; the server keeps running.\nUse Quit (here or from the tray icon) to stop the server.")
-        footer.setStyleSheet("color: #4CAF50;")
-        layout.addWidget(footer)
-
         quit_row = QHBoxLayout()
-        quit_row.addStretch()
+        footer = QLabel("Closing this window hides it to the system tray; the server keeps running. "
+                        "Use Quit (here or from the tray icon) to stop the server.")
+        footer.setStyleSheet("color: #4CAF50;")
+        footer.setWordWrap(True)
         quit_btn = QPushButton("Quit")
         quit_btn.setFixedWidth(100)
         quit_btn.clicked.connect(self._quit)
+        quit_row.addWidget(footer)
         quit_row.addWidget(quit_btn)
         layout.addLayout(quit_row)
 
