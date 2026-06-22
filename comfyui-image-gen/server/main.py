@@ -729,8 +729,6 @@ def _build_http_app(args) -> tuple[FastMCP, str]:
     async def _alive(request):
         from starlette.responses import PlainTextResponse
         _keepalive_ts[0] = time.monotonic()
-        client = getattr(request, "client", None)
-        log.info("/alive received (keepalive refreshed _keepalive_ts) from %s", client)
         return PlainTextResponse("ok")
 
     return mcp, mcp_path
@@ -781,20 +779,13 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         global _server_window
         _server_window = w
 
-    if managed:
-        log.info("Managed mode: managed_by shim pid=%s, grace=%ds, initial _keepalive_ts=%.1f, port=%d",
-                 args.managed_by, MANAGED_GRACE_SECONDS, _keepalive_ts[0], args.port)
-
     # In managed mode the window self-closes once the shim's keepalive pings go stale — when
     # the shim (Claude Desktop) is gone, the pings stop and the age crosses the grace window.
     # (No PID check: pings already cover shim death, and it avoids a psutil dependency.)
     def _stale() -> bool:
         if not managed:
             return False
-        age = time.monotonic() - _keepalive_ts[0]
-        log.info("stale check: keepalive age %.1fs (grace %ds, managed_by=%s)",
-                 age, MANAGED_GRACE_SECONDS, args.managed_by)
-        if age > MANAGED_GRACE_SECONDS:
+        if time.monotonic() - _keepalive_ts[0] > MANAGED_GRACE_SECONDS:
             log.info("Shim keepalive stale (>%ds) — shutting down", MANAGED_GRACE_SECONDS)
             return True
         return False

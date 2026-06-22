@@ -49,7 +49,6 @@ def _resolve_endpoints() -> tuple[str, str]:
 
     cfg = load_local_config()
     port = cfg.get("mcp_port", DEFAULT_MCP_PORT)
-    log.info("Resolved port=%d (source=%s)", port, "config" if "mcp_port" in cfg else "default")
     mcp_path = cfg.get("mcp_path")
     if not mcp_path:
         import secrets
@@ -98,7 +97,7 @@ def _spawn_server() -> None:
 
     cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     args = [sys.executable, "-m", "server.main", "--http", "--managed-by", str(os.getpid())]
-    log.info("Spawning HTTP server (managed-by shim pid %d): %s (cwd=%s)", os.getpid(), args, cwd)
+    log.info("Spawning HTTP server: %s (cwd=%s)", args, cwd)
     kwargs = {"cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
@@ -160,38 +159,27 @@ async def _warm_and_keepalive(alive_url: str) -> None:
     for the rest of the session (a --managed-by server self-shuts when the pings go stale).
 
     The tool list no longer depends on this — it's computed locally in _list_tools."""
-    log.info("Keepalive task started: alive_url=%s (shim pid %d)", alive_url or "(none)", os.getpid())
     try:
         deadline = time.monotonic() + READINESS_SPAWN_TIMEOUT
-        warmed = False
         while time.monotonic() < deadline:
             if await _is_alive(alive_url):
-                warmed = True
-                log.info("Keepalive warm: server is alive, entering ping loop")
                 break
             _spawn_server()
             await anyio.sleep(READINESS_POLL_INTERVAL)
-        if not warmed:
-            log.warning("Keepalive warm: server NOT alive after %ds; pinging anyway",
-                        READINESS_SPAWN_TIMEOUT)
 
         if not alive_url:
-            log.info("Keepalive: no alive_url (test mode); not pinging")
             return
 
-        ping = 0
         while True:
-            ping += 1
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
-                    resp = await client.get(alive_url)
-                log.info("Keepalive ping #%d ok (HTTP %d) -> %s", ping, resp.status_code, alive_url)
-            except httpx.HTTPError as e:
-                log.warning("Keepalive ping #%d FAILED: %r -> %s", ping, e, alive_url)
+                    await client.get(alive_url)
+            except httpx.HTTPError:
+                pass
             await anyio.sleep(KEEPALIVE_INTERVAL)
     except Exception:
         # A crash here silently stops all pings → the managed server shuts down after the
-        # grace window. Make that visible instead of invisible.
+        # grace window. Log it so that failure isn't invisible.
         log.exception("Keepalive task crashed")
         raise
 
