@@ -247,11 +247,19 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
 
     log.info("ComfyUI installed successfully")
 
-    install_path = _comfy_which(comfy_cli)
+    # We passed --workspace install_dir, so ComfyUI lives at install_dir itself (or, on
+    # some comfy-cli versions, a nested ComfyUI/ subdir). Trust those before falling back
+    # to `comfy which`, which needs a default workspace that we only set below.
+    def _looks_like_comfyui(d: str) -> bool:
+        return os.path.isfile(os.path.join(d, "main.py")) and os.path.isdir(os.path.join(d, "models"))
+
+    install_path = None
+    for candidate in (install_dir, os.path.join(install_dir, "ComfyUI")):
+        if _looks_like_comfyui(candidate):
+            install_path = candidate
+            break
     if not install_path:
-        comfyui_dir = os.path.join(install_dir, "ComfyUI")
-        if os.path.isdir(comfyui_dir):
-            install_path = comfyui_dir
+        install_path = _comfy_which(comfy_cli)
     if not install_path:
         raise RuntimeError("ComfyUI installed but installation path could not be determined")
 
