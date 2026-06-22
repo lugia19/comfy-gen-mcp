@@ -408,15 +408,6 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
     global comfyui_url, comfy_cli_path, models_dir
 
-    # Show a splash immediately so the user gets feedback during ComfyUI detection (which
-    # cold-starts comfy-cli and can take several seconds on first launch). Closed when the
-    # setup wizard or the server window appears.
-    try:
-        from server.ui import show_startup_splash
-        show_startup_splash()
-    except Exception as e:
-        log.debug("Could not show startup splash: %s", e)
-
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
     custom_workflow = _env("CUSTOM_WORKFLOW")
     custom_workflow_prompt_node_title = _env("CUSTOM_WORKFLOW_PROMPT_NODE")
@@ -430,13 +421,27 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     log.info("ANIMA_ARTISTS=%s", anima_artists or "(default)")
     log.info("ANIMA_STEPS=%s", anima_steps or "(default: 30)")
 
-    # Detect comfy-cli and ComfyUI
-    comfy_cli_path = find_comfy_cli()
+    # Detect comfy-cli and ComfyUI. This cold-starts comfy-cli (slow on first launch), so
+    # run it on a worker thread behind a responsive "starting up" dialog. A static splash
+    # can't survive this — the event loop isn't running yet, so the main thread blocking
+    # here would leave any plain window frozen/blank.
+    def _detect_environment():
+        try:
+            cli = find_comfy_cli()
+            return cli, (find_models_dir(cli) if cli else None)
+        except Exception as e:
+            log.error("Environment detection failed: %s", e)
+            return None, None
+
+    from server.ui import run_with_progress
+    comfy_cli_path, models_dir = run_with_progress(
+        "Starting Comfy-Gen-MCP…\n\nDetecting your ComfyUI installation.\n"
+        "This can take a moment on first launch.",
+        _detect_environment,
+    )
     log.info("comfy-cli: %s", comfy_cli_path or "NOT FOUND")
-    if comfy_cli_path:
-        models_dir = find_models_dir(comfy_cli_path)
-        log.info("Models dir: %s", models_dir or "NOT FOUND")
-    else:
+    log.info("Models dir: %s", models_dir or "NOT FOUND")
+    if not comfy_cli_path:
         log.warning("comfy-cli not found — ComfyUI management unavailable")
 
     # Load model packs and group by tool_name
@@ -784,13 +789,7 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     """Run the HTTP server: optional tunnel, the MCP server thread, then the Qt window on the
     main thread (blocks until quit), then ComfyUI/tunnel cleanup."""
     from server.tunnel import start_cloudflare_tunnel
-    from server.ui import (
-        close_startup_splash, show_tunnel_choice, show_url_window,
-        show_server_running_window, run_with_progress,
-    )
-
-    # Detection/setup is done; close the splash before any tunnel prompt or the window.
-    close_startup_splash()
+    from server.ui import show_tunnel_choice, show_url_window, show_server_running_window, run_with_progress
 
     local_cfg = load_local_config()
 
