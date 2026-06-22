@@ -197,6 +197,29 @@ def close_startup_splash() -> None:
         _splash = None
 
 
+class _RefreshingComboBox(QComboBox):
+    """Editable combo whose item list is re-fetched each time the popup opens.
+
+    Lets the LoRA dropdown pick up newly-dropped-in files without reopening Settings.
+    The user's current text (typed or selected) is preserved across the refresh.
+    """
+
+    def __init__(self, list_fn, parent=None):
+        super().__init__(parent)
+        self._list_fn = list_fn
+
+    def showPopup(self):
+        current = self.currentText()
+        items = self._list_fn()
+        if items != [self.itemText(i) for i in range(self.count())]:
+            self.blockSignals(True)
+            self.clear()
+            self.addItems(items)
+            self.setCurrentText(current)
+            self.blockSignals(False)
+        super().showPopup()
+
+
 def _make_hline() -> QFrame:
     """Thin horizontal separator for section dividers."""
     line = QFrame()
@@ -492,9 +515,13 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         comfy_cli = find_comfy_cli()
         mdir = find_models_dir(comfy_cli) if comfy_cli else None
         loras_dir = os.path.join(mdir, "loras") if mdir else None
-        available = []
-        if loras_dir and os.path.isdir(loras_dir):
-            available = sorted(f for f in os.listdir(loras_dir) if f.lower().endswith(".safetensors"))
+
+        def list_loras() -> list[str]:
+            if loras_dir and os.path.isdir(loras_dir):
+                return sorted(f for f in os.listdir(loras_dir) if f.lower().endswith(".safetensors"))
+            return []
+
+        available = list_loras()
 
         lora_container = QWidget()
         lora_layout = QVBoxLayout(lora_container)
@@ -506,7 +533,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             row = QWidget()
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
-            combo = QComboBox()
+            combo = _RefreshingComboBox(list_loras)
             combo.setEditable(True)
             combo.addItems(available)
             if name:
