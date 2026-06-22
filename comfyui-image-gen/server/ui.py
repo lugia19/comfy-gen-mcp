@@ -1219,10 +1219,6 @@ class ServerWindow(QMainWindow):
         self._tray.activated.connect(self._on_tray_click)
         self._tray.show()
 
-        # Size to content with a little (~5%) headroom, rather than a fixed height.
-        natural = self.sizeHint().height()
-        self.resize(self.sizeHint().width(), int(natural * 1.05))
-
     def _copy_url(self):
         from server.tunnel import copy_to_clipboard
         clipboard = QApplication.clipboard()
@@ -1277,6 +1273,8 @@ class ServerWindow(QMainWindow):
         """Open the Settings dialog; if anything was saved, show the restart notice."""
         if run_settings_dialog():
             self._restart_label.setVisible(True)
+            # The notice adds a row; grow the window so it isn't clipped (never shrink).
+            self.resize(self.width(), max(self.height(), self.sizeHint().height()))
 
     def _reinstall_comfyui(self):
         """Nuke the ComfyUI installation directory and quit so the user can re-run setup."""
