@@ -86,7 +86,9 @@ _server_window = None  # set in HTTP mode for cross-thread download UI
 # the shim keepalive-pings GET /alive. If the pings go stale (or the shim dies), the
 # server shuts itself down. _keepalive_ts holds the monotonic time of the last ping.
 _keepalive_ts: list[float] = [0.0]
-MANAGED_GRACE_SECONDS = 60
+# 3 minutes: long enough that a stalled shim (e.g. the user sitting on a tool-permission
+# prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
+MANAGED_GRACE_SECONDS = 180
 
 # Active pack per tool_name — looked up dynamically by handlers.
 # Updated after background setup completes so selections take effect without restart.
