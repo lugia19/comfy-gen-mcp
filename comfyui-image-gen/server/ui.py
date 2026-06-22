@@ -5,6 +5,7 @@ import os
 import platform
 import sys
 import threading
+import time
 import webbrowser
 
 from PyQt6.QtCore import Qt, QTimer, QThread, QEventLoop, pyqtSignal
@@ -343,6 +344,7 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
         error_label.setText("")
         install_state["status"] = "running"
         install_state["error"] = None
+        install_state["started"] = time.time()
 
         def _run():
             try:
@@ -357,7 +359,13 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
         t.start()
 
     def poll_install():
-        if install_state["status"] == "done":
+        if install_state["status"] == "running":
+            elapsed = int(time.time() - install_state.get("started", time.time()))
+            status_label.setText(
+                "Installing ComfyUI... this may take several minutes. "
+                f"(elapsed {elapsed // 60}:{elapsed % 60:02d})"
+            )
+        elif install_state["status"] == "done":
             poll_timer.stop()
             progress.setVisible(False)
             status_label.setText("ComfyUI installed successfully!")
@@ -524,7 +532,9 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                    "folder, then add them here. A LoRA only applies when its trigger word is "
                    "in the prompt (new LoRAs default the trigger to the filename) — clear the "
                    "trigger to always apply it. Be sure to set the trigger word to the same "
-                   "one used to train the LoRA (if applicable).")
+                   "one used to train the LoRA (if applicable). If the LoRA adds a new artist "
+                   "or style, also add its tag to the Anima Artist Styles list above so the "
+                   "model knows to use it.")
         d.setWordWrap(True)
         d.setStyleSheet("color: gray;")
         layout.addWidget(d)
@@ -552,6 +562,11 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             rl.setContentsMargins(0, 0, 0, 0)
             combo = _RefreshingComboBox(list_loras)
             combo.setEditable(True)
+            # Don't let the combo collapse to the width of whatever's currently in the list
+            # (it ends up tiny / truncates long filenames). Keep a sensible minimum and let
+            # the popup size to its contents so full names are readable.
+            combo.setMinimumWidth(260)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow)
             combo.addItems(available)
             if name:
                 combo.setCurrentText(name)
@@ -565,14 +580,15 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             spin.setValue(float(strength))
             trigger_edit = QLineEdit(trigger)
             trigger_edit.setPlaceholderText("trigger word (optional)")
+            trigger_edit.setMinimumWidth(160)
             remove = QPushButton("Remove")
             remove.setFixedWidth(80)
             entry = (combo, spin, trigger_edit, row)
             remove.clicked.connect(lambda: (lora_rows.remove(entry), row.setParent(None)))
-            rl.addWidget(combo)
-            rl.addWidget(spin)
-            rl.addWidget(trigger_edit)
-            rl.addWidget(remove)
+            rl.addWidget(combo, 3)
+            rl.addWidget(spin, 0)
+            rl.addWidget(trigger_edit, 2)
+            rl.addWidget(remove, 0)
             lora_layout.addWidget(row)
             lora_rows.append(entry)
 
