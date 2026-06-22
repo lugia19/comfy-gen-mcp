@@ -491,9 +491,15 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 e = {"name": e}
             add_lora_row(e.get("name", ""), e.get("strength", 1.0))
 
+        lora_btn_row = QHBoxLayout()
         add_btn = QPushButton("Add LoRA")
         add_btn.clicked.connect(lambda: add_lora_row())
-        layout.addWidget(add_btn)
+        open_loras_btn = QPushButton("Open LoRAs Folder")
+        open_loras_btn.clicked.connect(lambda: _open_loras_folder(parent))
+        lora_btn_row.addWidget(add_btn)
+        lora_btn_row.addWidget(open_loras_btn)
+        lora_btn_row.addStretch()
+        layout.addLayout(lora_btn_row)
 
     # ── Advanced fields ──
     for f in [s for s in SETTINGS_SCHEMA if s.get("advanced")]:
@@ -562,13 +568,10 @@ def run_settings_dialog():
     outer.addWidget(_make_hline())
     tools_row = QHBoxLayout()
     open_config_btn = QPushButton("Open Config File")
-    open_loras_btn = QPushButton("Open LoRAs Folder")
     open_log_btn = QPushButton("Open Log")
     open_config_btn.clicked.connect(lambda: _open_config_file(dialog))
-    open_loras_btn.clicked.connect(lambda: _open_loras_folder(dialog))
     open_log_btn.clicked.connect(lambda: _open_comfyui_log(dialog))
     tools_row.addWidget(open_config_btn)
-    tools_row.addWidget(open_loras_btn)
     tools_row.addWidget(open_log_btn)
     outer.addLayout(tools_row)
 
