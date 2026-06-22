@@ -46,6 +46,7 @@ from server.config import (
 )
 from server.comfy_job import ComfyJob, wait_for_job
 from server.model_pack import check_models_present, group_packs_by_tool, load_all_packs, resolve_pack_selections
+from server.tool_specs import CUSTOM_DESC, EDIT_DESC, FETCH_DESC, resolve_tool_description
 from server.workflow import inject_loras, load_custom_workflow
 
 log = logging.getLogger("comfy-mcp")
@@ -323,27 +324,14 @@ def _apply_loras_to_pack(pack: dict) -> None:
             log.error("Pack '%s': failed to inject LoRAs (%s); serving pack unmodified", pack["name"], e)
 
 
-def _apply_pack_customizations(packs: list[dict], anima_artists: str | None,
+def _apply_pack_customizations(packs: list[dict], groups: dict[str, list[dict]],
                                anima_steps: str | None) -> None:
-    """Apply artist-list substitution, the anima step override, and LoRA injection to each
-    resolved pack (mutates packs in place)."""
+    """Finalize each resolved pack's tool description (group override + artist-list
+    substitution, via the shared resolve_tool_description), apply the anima step override, and
+    inject LoRAs (mutates packs in place)."""
     for pack in packs:
-        if pack.get("default_artist_list"):
-            local_cfg = load_local_config()
-            artists_str = (
-                anima_artists
-                or local_cfg.get("pack_settings", {}).get(pack["name"], {}).get("artist_list")
-                or pack["default_artist_list"]
-            )
-            parts = [a.strip() for a in artists_str.split(",") if a.strip()]
-            if parts:
-                preferred = parts[0]
-                others = ", ".join(parts[1:]) if len(parts) > 1 else "none"
-                artist_display = f"preferred default: {preferred}, others available: {others}"
-            else:
-                artist_display = artists_str
-            log.info("Pack '%s' artist_list: %s", pack["name"], artists_str)
-            pack["tool_description"] = pack["tool_description"].replace("{artist_list}", artist_display)
+        pack["tool_description"] = resolve_tool_description(pack, groups, env_reader=_env)
+        log.info("Pack '%s' tool description finalized", pack["name"])
 
         if pack["name"] == "anima" and anima_steps:
             try:
@@ -478,14 +466,8 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     packs = resolve_pack_selections(groups, env_reader=_env)
     log.info("Resolved packs: %s", [p["name"] for p in packs])
 
-    # For multi-pack groups, use group_tool_description if available
-    for pack in packs:
-        tool_name = pack["tool_name"]
-        if len(groups.get(tool_name, [])) > 1 and pack.get("group_tool_description"):
-            pack["tool_description"] = pack["group_tool_description"]
-
-    # Apply per-pack customizations (artist list, anima steps, LoRAs)
-    _apply_pack_customizations(packs, anima_artists, anima_steps)
+    # Finalize tool descriptions (group override + artist list) and apply anima steps + LoRAs.
+    _apply_pack_customizations(packs, groups, anima_steps)
 
     # Load custom workflow as a separate tool
     custom_pack, custom_workflow_error = _load_custom_pack(
@@ -516,16 +498,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
     """Register all tools on the FastMCP instance."""
 
     # Custom workflow tool
-    @mcp.tool(
-        name="generate_custom_image",
-        description=(
-            "Generate an image using a user-provided custom ComfyUI workflow. "
-            "This tool only works if the user has configured a custom workflow path in the extension settings. "
-            "Use natural language to describe the image. "
-            "The aspect_ratio parameter controls image shape: "
-            "square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9). Default is square."
-        ),
-    )
+    @mcp.tool(name="generate_custom_image", description=CUSTOM_DESC)
     async def generate_custom_image(prompt: str, aspect_ratio: str = "square") -> CallToolResult:
         if custom_pack is None:
             if custom_workflow_error:
@@ -548,13 +521,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         return await _run_generation(prompt, custom_pack, aspect_ratio)
 
     # Fetch result tool
-    @mcp.tool(
-        name="fetch_result",
-        description=(
-            "Fetch the result of an image generation that is still in progress. "
-            "Use this when a generation tool returns a request_token instead of an image."
-        ),
-    )
+    @mcp.tool(name="fetch_result", description=FETCH_DESC)
     async def fetch_result(request_token: str) -> CallToolResult:
         log.info("fetch_result called, token=%s", request_token)
         if request_token not in _jobs:
@@ -571,27 +538,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             _edit_pack = json.load(f)
             _edit_pack["_source_path"] = os.path.abspath(_edit_pack_path)
 
-    @mcp.tool(
-        name="edit_image",
-        description=(
-            "Edit an image using a text prompt. "
-            "image_path can be a local file path (e.g. C:/Users/me/photo.png) or a publicly accessible URL. "
-            "Previously generated images return their saved_path — use that.\n\n"
-            "If the user uploads an image to the chat to be edited, ask them to provide either "
-            "the file path on their local machine or a public URL to the image instead, "
-            "as uploaded chat images cannot be accessed directly. The URL must not require login to access. "
-            "On Windows, the user can get a file's path by holding Shift, right-clicking the file, and selecting 'Copy as path'. "
-            "Suggest https://litterbox.catbox.moe/ as a free temporary file host if they need one.\n\n"
-            "Optionally provide second_image_path to reference a second image. "
-            "When using two images, refer to them as 'image1' and 'image2' in the prompt.\n\n"
-            "IMPORTANT: The generated image may not appear inline in the conversation, but it IS sent to the user. "
-            "Do not assume the generation failed just because you cannot see the image.\n\n"
-            "Prompting tips:\n"
-            "- Be precise and verbatim when describing desired changes (e.g. 'change the text to say \"Hello World\"')\n"
-            "- For targeted edits, say 'change nothing else' and mention what should stay the same\n"
-            "- Describe what you want the result to look like, not the editing operation"
-        ),
-    )
+    @mcp.tool(name="edit_image", description=EDIT_DESC)
     async def edit_image(prompt: str, image_path: str, second_image_path: str = "") -> CallToolResult:
         # Resolve URLs to local temp files
         temp_files = []

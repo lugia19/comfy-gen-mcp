@@ -9,7 +9,6 @@ Endpoint resolution can be overridden for testing via SHIM_MCP_URL / SHIM_ALIVE_
 spawning can be disabled with SHIM_NO_SPAWN=1 (point it at a server you started by hand).
 """
 
-import json
 import logging
 import os
 import subprocess
@@ -21,10 +20,11 @@ import httpx
 import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-from mcp.server.lowlevel import NotificationOptions, Server
+from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from server.config import LOCAL_CONFIG_PATH, load_local_config, save_local_config
+from server.config import load_local_config, save_local_config
+from server.tool_specs import build_tool_specs
 
 log = logging.getLogger("comfy-mcp.shim")
 
@@ -32,7 +32,6 @@ DEFAULT_MCP_PORT = 9247
 SPAWN_GRACE_MESSAGE = (
     "The image generation server is starting up. Please try again in a few seconds."
 )
-_TOOL_CACHE_PATH = os.path.join(os.path.dirname(LOCAL_CONFIG_PATH), ".tool_cache.json")
 
 # Background warm/keepalive cadence (seconds)
 KEEPALIVE_INTERVAL = 15
@@ -62,69 +61,15 @@ def _resolve_endpoints() -> tuple[str, str]:
     return base + mcp_path, base + "/alive"
 
 
-# ── Tool-list cache (so list_tools works before the server is warm) ────
+# ── Tool list ──────────────────────────────────────────────────────────
 
-def _load_cached_tools() -> list[types.Tool]:
-    try:
-        with open(_TOOL_CACHE_PATH, encoding="utf-8") as f:
-            return [types.Tool.model_validate(t) for t in json.load(f)]
-    except (OSError, ValueError):
-        return []
+def _shim_tools() -> list[types.Tool]:
+    """The correct tool list, computed locally from the bundled packs + local_config.
 
-
-_MANIFEST_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
-
-# Aspect ratio is shared by every generation tool.
-_ASPECT_SCHEMA = {
-    "type": "string",
-    "enum": ["square", "portrait", "landscape", "tall", "wide"],
-    "default": "square",
-    "description": "Image shape: square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9).",
-}
-
-
-def _schema_for(name: str) -> dict:
-    """Input schema for a tool, by name. Mirrors the signatures registered in main.py so the
-    baseline tools are actually callable before the live server refreshes them."""
-    if name == "fetch_result":
-        return {"type": "object", "properties": {"request_token": {"type": "string"}},
-                "required": ["request_token"]}
-    if name == "edit_image":
-        return {"type": "object",
-                "properties": {"prompt": {"type": "string"}, "image_path": {"type": "string"},
-                               "second_image_path": {"type": "string"}},
-                "required": ["prompt", "image_path"]}
-    # All generate_* tools take (prompt, aspect_ratio).
-    return {"type": "object",
-            "properties": {"prompt": {"type": "string"}, "aspect_ratio": _ASPECT_SCHEMA},
-            "required": ["prompt"]}
-
-
-def _baseline_tools() -> list[types.Tool]:
-    """Tool list derived from the bundled manifest, used before the HTTP server is warm so
-    Claude Desktop never caches an empty connector. Replaced by the live definitions (richer
-    descriptions) via tools/list_changed once the server comes up."""
-    try:
-        with open(_MANIFEST_PATH, encoding="utf-8") as f:
-            declared = json.load(f).get("tools", [])
-    except (OSError, ValueError) as e:
-        log.warning("Could not read manifest tools for baseline: %s", e)
-        return []
-    tools = []
-    for t in declared:
-        name = t.get("name")
-        if name:
-            tools.append(types.Tool(name=name, description=t.get("description", ""),
-                                    inputSchema=_schema_for(name)))
-    return tools
-
-
-def _save_cached_tools(tools: list[types.Tool]) -> None:
-    try:
-        with open(_TOOL_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump([t.model_dump(mode="json", exclude_none=True) for t in tools], f)
-    except OSError as e:
-        log.warning("Could not write tool cache: %s", e)
+    No server / cache needed — see server.tool_specs. Claude Desktop caches the first
+    list_tools result and won't refresh mid-session, so this must be right from the start.
+    """
+    return [types.Tool(**spec) for spec in build_tool_specs()]
 
 
 # ── Server liveness + spawn ───────────────────────────────────────────
@@ -178,33 +123,17 @@ async def _with_session(mcp_url: str, op):
 
 # ── Shim server ───────────────────────────────────────────────────────
 
-def build_server(mcp_url: str, alive_url: str) -> tuple[Server, dict]:
+def build_server(mcp_url: str, alive_url: str) -> Server:
     """Build the low-level stdio Server that proxies to the HTTP server."""
     server = Server("Comfy-Gen-MCP")
-    state = {"session_ref": None, "warmed": False}
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
-        # Capture the live ServerSession so the warm task can push tools/list_changed.
-        try:
-            state["session_ref"] = server.request_context.session
-        except LookupError:
-            pass
-
-        if await _is_alive(alive_url):
-            try:
-                result = await _with_session(mcp_url, lambda s: s.list_tools())
-                _save_cached_tools(result.tools)
-                state["warmed"] = True
-                return result.tools
-            except Exception as e:
-                log.warning("Upstream list_tools failed, serving cache: %s", e)
-
-        # Server not ready yet — kick off a spawn and serve the best list we can without it:
-        # last run's cache (richest), else the manifest-derived baseline. Never return empty,
-        # or Claude Desktop caches a tool-less connector.
+        # The tool list is computed locally from the bundle — correct even before the HTTP
+        # server is up. Kick off a spawn so the server is warming by the time a tool is
+        # called, but don't wait on it.
         _spawn_server()
-        return _load_cached_tools() or _baseline_tools()
+        return _shim_tools()
 
     @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: dict) -> types.CallToolResult:
@@ -222,13 +151,14 @@ def build_server(mcp_url: str, alive_url: str) -> tuple[Server, dict]:
                 isError=True,
             )
 
-    return server, state
+    return server
 
 
-async def _warm_and_keepalive(mcp_url: str, alive_url: str, state: dict) -> None:
-    """Background task: ensure the server comes up, refresh tools + notify list_changed
-    once it does, then keepalive-ping for the rest of the session."""
-    # Warm: wait for readiness (spawning if needed), then refresh the tool list.
+async def _warm_and_keepalive(alive_url: str) -> None:
+    """Background task: spawn the HTTP server and wait for it to come up, then keepalive-ping
+    for the rest of the session (a --managed-by server self-shuts when the pings go stale).
+
+    The tool list no longer depends on this — it's computed locally in _list_tools."""
     deadline = time.monotonic() + READINESS_SPAWN_TIMEOUT
     while time.monotonic() < deadline:
         if await _is_alive(alive_url):
@@ -236,19 +166,6 @@ async def _warm_and_keepalive(mcp_url: str, alive_url: str, state: dict) -> None
         _spawn_server()
         await anyio.sleep(READINESS_POLL_INTERVAL)
 
-    if await _is_alive(alive_url) and not state["warmed"]:
-        try:
-            result = await _with_session(mcp_url, lambda s: s.list_tools())
-            _save_cached_tools(result.tools)
-            state["warmed"] = True
-            session = state.get("session_ref")
-            if session is not None:
-                await session.send_tool_list_changed()
-                log.info("Server warm; sent tools/list_changed")
-        except Exception as e:
-            log.warning("Warm refresh failed: %s", e)
-
-    # Keepalive: tells a --managed-by server we're still here.
     if alive_url:
         while True:
             try:
@@ -262,15 +179,12 @@ async def _warm_and_keepalive(mcp_url: str, alive_url: str, state: dict) -> None
 async def _run_async() -> None:
     mcp_url, alive_url = _resolve_endpoints()
     log.info("Shim starting: mcp_url=%s alive=%s", mcp_url, alive_url or "(test mode)")
-    server, state = build_server(mcp_url, alive_url)
+    server = build_server(mcp_url, alive_url)
 
     async with anyio.create_task_group() as tg:
-        tg.start_soon(_warm_and_keepalive, mcp_url, alive_url, state)
+        tg.start_soon(_warm_and_keepalive, alive_url)
         async with stdio_server() as (read, write):
-            # Advertise tools.listChanged so the client honors our post-warm refresh.
-            init_options = server.create_initialization_options(
-                NotificationOptions(tools_changed=True)
-            )
+            init_options = server.create_initialization_options()
             await server.run(read, write, init_options)
         tg.cancel_scope.cancel()
 
