@@ -692,7 +692,9 @@ def run_settings_dialog():
 
     dialog = QDialog()
     dialog.setWindowTitle("Comfy-Gen-MCP — Settings")
-    dialog.setMinimumWidth(560)
+    # Wide enough that the LoRA rows (combo + strength + trigger + remove) fit without the
+    # scroll area sprouting a horizontal scrollbar.
+    dialog.setMinimumWidth(720)
     dialog.setMinimumHeight(600)
     outer = QVBoxLayout(dialog)
 
@@ -762,8 +764,9 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
     wizard = QDialog()
     wizard.setWindowTitle("Comfy-Gen-MCP — First Time Setup")
-    wizard.setMinimumWidth(520)
-    wizard.setMinimumHeight(500)
+    # Matches the Settings dialog so the LoRA rows fit without a horizontal scrollbar.
+    wizard.setMinimumWidth(720)
+    wizard.setMinimumHeight(560)
 
     main_layout = QVBoxLayout(wizard)
     stack = QWidget()
