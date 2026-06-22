@@ -1076,7 +1076,7 @@ class ServerWindow(QMainWindow):
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
     def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
-                 stale_check=None):
+                 stale_check=None, managed: bool = False):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
@@ -1100,6 +1100,17 @@ class ServerWindow(QMainWindow):
         self._url_entry = QLineEdit(self._url)
         self._url_entry.setReadOnly(True)
         layout.addWidget(self._url_entry)
+
+        # When launched by the stdio shim (Claude Desktop), the connection is already wired
+        # up internally — the URL is only useful for reaching this server from elsewhere.
+        if managed:
+            managed_note = QLabel(
+                "You don't need this URL for Claude Desktop — it's already set up to work. "
+                "It's only needed if you want to reach this server from another machine."
+            )
+            managed_note.setStyleSheet("color: gray;")
+            managed_note.setWordWrap(True)
+            layout.addWidget(managed_note)
 
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: #2a82da;")
@@ -1333,15 +1344,16 @@ class ServerWindow(QMainWindow):
         log.info("Download request completed: %s", title)
 
 
-def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
+def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed: bool = False):
     """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
     stale_check: optional callable; if it returns True the window self-closes (managed mode).
+    managed: True when spawned by the stdio shim (adds a note that the URL is optional).
     """
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
-    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, **window_kwargs)
+    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, managed=managed, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
@@ -1349,14 +1361,14 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
     app.exec()
 
 
-def show_url_window(url: str, on_ready=None, stale_check=None):
+def show_url_window(url: str, on_ready=None, stale_check=None, managed: bool = False):
     """Show the tunnel URL window with tray icon. Blocks until Quit."""
-    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check)
+    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check, managed=managed)
 
 
-def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None):
+def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None, managed: bool = False):
     """Show the minimal local server-running window with tray icon. Blocks until Quit."""
-    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check)
+    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check, managed=managed)
 
 
 def run_with_progress(label: str, task_fn) -> object:
