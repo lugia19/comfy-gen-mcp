@@ -72,6 +72,53 @@ def _load_cached_tools() -> list[types.Tool]:
         return []
 
 
+_MANIFEST_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "manifest.json")
+
+# Aspect ratio is shared by every generation tool.
+_ASPECT_SCHEMA = {
+    "type": "string",
+    "enum": ["square", "portrait", "landscape", "tall", "wide"],
+    "default": "square",
+    "description": "Image shape: square (1:1), portrait (3:4), landscape (4:3), tall (9:16), wide (16:9).",
+}
+
+
+def _schema_for(name: str) -> dict:
+    """Input schema for a tool, by name. Mirrors the signatures registered in main.py so the
+    baseline tools are actually callable before the live server refreshes them."""
+    if name == "fetch_result":
+        return {"type": "object", "properties": {"request_token": {"type": "string"}},
+                "required": ["request_token"]}
+    if name == "edit_image":
+        return {"type": "object",
+                "properties": {"prompt": {"type": "string"}, "image_path": {"type": "string"},
+                               "second_image_path": {"type": "string"}},
+                "required": ["prompt", "image_path"]}
+    # All generate_* tools take (prompt, aspect_ratio).
+    return {"type": "object",
+            "properties": {"prompt": {"type": "string"}, "aspect_ratio": _ASPECT_SCHEMA},
+            "required": ["prompt"]}
+
+
+def _baseline_tools() -> list[types.Tool]:
+    """Tool list derived from the bundled manifest, used before the HTTP server is warm so
+    Claude Desktop never caches an empty connector. Replaced by the live definitions (richer
+    descriptions) via tools/list_changed once the server comes up."""
+    try:
+        with open(_MANIFEST_PATH, encoding="utf-8") as f:
+            declared = json.load(f).get("tools", [])
+    except (OSError, ValueError) as e:
+        log.warning("Could not read manifest tools for baseline: %s", e)
+        return []
+    tools = []
+    for t in declared:
+        name = t.get("name")
+        if name:
+            tools.append(types.Tool(name=name, description=t.get("description", ""),
+                                    inputSchema=_schema_for(name)))
+    return tools
+
+
 def _save_cached_tools(tools: list[types.Tool]) -> None:
     try:
         with open(_TOOL_CACHE_PATH, "w", encoding="utf-8") as f:
@@ -153,9 +200,11 @@ def build_server(mcp_url: str, alive_url: str) -> tuple[Server, dict]:
             except Exception as e:
                 log.warning("Upstream list_tools failed, serving cache: %s", e)
 
-        # Server not ready yet — kick off a spawn and serve whatever we cached last time.
+        # Server not ready yet — kick off a spawn and serve the best list we can without it:
+        # last run's cache (richest), else the manifest-derived baseline. Never return empty,
+        # or Claude Desktop caches a tool-less connector.
         _spawn_server()
-        return _load_cached_tools()
+        return _load_cached_tools() or _baseline_tools()
 
     @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: dict) -> types.CallToolResult:
