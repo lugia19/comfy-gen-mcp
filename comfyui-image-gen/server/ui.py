@@ -245,6 +245,21 @@ def _make_hline() -> QFrame:
     return line
 
 
+def _fit_scroll_to_content(scroll: QScrollArea, inner: QWidget, extra: int = 8) -> None:
+    """Make a scroll area wide enough to show *inner* without a horizontal scrollbar.
+
+    Sets the scroll area's minimum width to the content's preferred width plus room for the
+    vertical scrollbar, and turns horizontal scrolling off entirely so it can never appear.
+    The host dialog inherits this as its minimum width, so it opens exactly as wide as the
+    content needs — no guessing a fixed width.
+    """
+    inner.adjustSize()
+    vbar = scroll.verticalScrollBar().sizeHint().width()
+    frame = 2 * scroll.frameWidth()
+    scroll.setMinimumWidth(inner.sizeHint().width() + vbar + frame + extra)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+
 # ── 1. ComfyUI Installation ──────────────────────────────────────────
 
 def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
@@ -692,9 +707,6 @@ def run_settings_dialog():
 
     dialog = QDialog()
     dialog.setWindowTitle("Comfy-Gen-MCP — Settings")
-    # Wide enough that the LoRA rows (combo + strength + trigger + remove) fit without the
-    # scroll area sprouting a horizontal scrollbar.
-    dialog.setMinimumWidth(720)
     dialog.setMinimumHeight(600)
     outer = QVBoxLayout(dialog)
 
@@ -705,6 +717,7 @@ def run_settings_dialog():
     collect = _build_settings_form(form_layout, packs, groups, inner)
     form_layout.addStretch()
     scroll.setWidget(inner)
+    _fit_scroll_to_content(scroll, inner)  # size to content → never a horizontal scrollbar
     outer.addWidget(scroll)
 
     # Files & logs
@@ -764,8 +777,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
     wizard = QDialog()
     wizard.setWindowTitle("Comfy-Gen-MCP — First Time Setup")
-    # Matches the Settings dialog so the LoRA rows fit without a horizontal scrollbar.
-    wizard.setMinimumWidth(720)
+    wizard.setMinimumWidth(520)  # floor; the settings page widens it to fit its content
     wizard.setMinimumHeight(560)
 
     main_layout = QVBoxLayout(wizard)
@@ -824,6 +836,7 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
         collect_holder["collect"] = _build_settings_form(il, packs, groups, inner)
         il.addStretch()
         settings_scroll.setWidget(inner)
+        _fit_scroll_to_content(settings_scroll, inner)  # size to content → no horizontal scrollbar
 
     _rebuild_settings_page()
 
