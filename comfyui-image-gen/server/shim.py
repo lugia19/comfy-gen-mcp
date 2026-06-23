@@ -195,6 +195,24 @@ async def _with_session(mcp_url: str, op):
             return await op(session)
 
 
+async def _live_tools(mcp_url: str, alive_url: str) -> list[types.Tool] | None:
+    """The running server's authoritative tool list, or None if it isn't reachable.
+
+    Prefer this over the locally-computed _shim_tools(): the server is the source of truth (it
+    reflects the live config and can't drift), and on a Claude Desktop reconnect this is what
+    surfaces settings changes. Falls back to None (→ local specs) before the server is up — e.g.
+    the very first run, where the server is still warming for minutes."""
+    if not await _is_alive(alive_url):
+        return None
+    try:
+        with anyio.fail_after(5):
+            result = await _with_session(mcp_url, lambda s: s.list_tools())
+        return list(result.tools)
+    except Exception as e:
+        log.warning("Live list_tools failed (%s); falling back to local specs", e)
+        return None
+
+
 # ── Shim server ───────────────────────────────────────────────────────
 
 def build_server(mcp_url: str, alive_url: str) -> Server:
@@ -203,11 +221,12 @@ def build_server(mcp_url: str, alive_url: str) -> Server:
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
-        # The tool list is computed locally from the bundle — correct even before the HTTP
-        # server is up. Kick off a spawn so the server is warming by the time a tool is
-        # called, but don't wait on it.
+        # Kick off a spawn so the server is warming by the time a tool is called.
         _spawn_server()
-        return _shim_tools()
+        # Prefer the running server's authoritative list (reflects live config, can't drift);
+        # fall back to the locally-computed specs while the server is still coming up.
+        live = await _live_tools(mcp_url, alive_url)
+        return live if live is not None else _shim_tools()
 
     @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: dict) -> types.CallToolResult:

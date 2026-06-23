@@ -805,9 +805,14 @@ def run_settings_dialog(managed: bool = False):
         collect()
         result["saved"] = True
         notice.setText("Settings saved.")
+        prompt = "Settings saved. Restart now to apply the changes?"
+        if managed:
+            prompt += (
+                "\n\nNote: changes to the available tools/styles only appear in Claude after you "
+                "fully restart Claude Desktop. Other changes apply on restart."
+            )
         reply = QMessageBox.question(
-            dialog, "Restart to apply",
-            "Settings saved. Restart now to apply the changes?",
+            dialog, "Restart to apply", prompt,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
