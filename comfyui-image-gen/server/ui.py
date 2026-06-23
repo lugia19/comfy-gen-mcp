@@ -1184,10 +1184,18 @@ class ServerWindow(QMainWindow):
         troubleshoot_row.addWidget(reinstall_btn)
         layout.addLayout(troubleshoot_row)
 
+        # ComfyUI status: the reachability check is a blocking HTTP GET that can hang up to its
+        # 2s timeout while ComfyUI is starting, so it runs on a background thread (NEVER the GUI
+        # thread — that froze the event loop ~2/3 of the time). The worker writes a cached state;
+        # a cheap GUI timer just renders it.
         self._comfyui_failed_notified = False  # one tray nudge per failure episode
-        self._comfyui_poll = QTimer(self)
-        self._comfyui_poll.timeout.connect(self._poll_comfyui)
-        self._comfyui_poll.start(3000)
+        self._comfyui_state: tuple[str, str] = ("starting", "")  # (state, tooltip), set by worker
+        self._comfyui_poll_stop = threading.Event()
+        self._comfyui_worker = threading.Thread(target=self._poll_comfyui_worker, daemon=True)
+        self._comfyui_worker.start()
+        self._comfyui_render_timer = QTimer(self)
+        self._comfyui_render_timer.timeout.connect(self._render_comfyui_status)
+        self._comfyui_render_timer.start(1000)
 
         layout.addStretch()
 
@@ -1257,6 +1265,7 @@ class ServerWindow(QMainWindow):
     def _quit(self):
         """Actually quit — called from tray menu."""
         self._quitting = True
+        self._comfyui_poll_stop.set()  # stop the background status poller
         QApplication.quit()
 
     def _check_stale(self):
@@ -1278,22 +1287,36 @@ class ServerWindow(QMainWindow):
         self.hide()
         self._tray.showMessage("Comfy-Gen-MCP", "Server is still running. Right-click tray icon to quit.", QSystemTrayIcon.MessageIcon.Information, 2000)
 
-    def _poll_comfyui(self):
+    def _poll_comfyui_worker(self):
+        """Background thread: do the blocking reachability check off the GUI thread and cache the
+        result in self._comfyui_state. The GUI never touches the network."""
         from server.comfyui import _check_url, get_launch_error, set_launch_error
         from server.config import COMFYUI_DEFAULT_URL
-        if _check_url(COMFYUI_DEFAULT_URL):
+        while not self._comfyui_poll_stop.is_set():
+            try:
+                if _check_url(COMFYUI_DEFAULT_URL):
+                    set_launch_error(None)  # healthy now — clear any stale failure
+                    self._comfyui_state = ("ready", "")
+                elif get_launch_error():
+                    self._comfyui_state = ("failed", get_launch_error())
+                else:
+                    self._comfyui_state = ("starting", "")
+            except Exception as e:
+                log.warning("ComfyUI status poll failed: %s", e)
+            self._comfyui_poll_stop.wait(3.0)
+
+    def _render_comfyui_status(self):
+        """GUI thread: cheap render of the cached status — no network here."""
+        state, tooltip = self._comfyui_state
+        if state == "ready":
             self._comfyui_status.setText("ComfyUI: ready")
             self._comfyui_status.setStyleSheet("color: #4CAF50;")
             self._comfyui_status.setToolTip("")
             self._comfyui_failed_notified = False
-            set_launch_error(None)  # healthy now — clear any stale failure
-            return
-
-        err = get_launch_error()
-        if err:
+        elif state == "failed":
             self._comfyui_status.setText("ComfyUI: failed to start")
             self._comfyui_status.setStyleSheet("color: #f44336;")
-            self._comfyui_status.setToolTip(err)
+            self._comfyui_status.setToolTip(tooltip)
             # Surface it once: the window is usually hidden in the tray, so nudge + raise.
             if not self._comfyui_failed_notified:
                 self._comfyui_failed_notified = True
