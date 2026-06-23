@@ -2,8 +2,11 @@
 
 import copy
 import json
+import logging
 import math
 import random
+
+log = logging.getLogger("comfy-mcp")
 
 ASPECT_RATIOS: dict[str, tuple[int, int]] = {
     "square":    (1, 1),
@@ -67,6 +70,7 @@ def build_prompt(
     # Toggle trigger-gated LoRAs: active strength only if the trigger is in the prompt.
     if lora_toggles:
         lowered = prompt_text.lower()
+        enabled, disabled = [], []
         for tog in lora_toggles:
             nid = tog["node_id"]
             if nid not in wf:
@@ -74,6 +78,10 @@ def build_prompt(
             trigger = tog.get("trigger") or ""
             active = (not trigger) or (trigger.lower() in lowered)
             wf[nid]["inputs"]["strength_model"] = float(tog["strength"]) if active else 0.0
+            label = f"node {nid}" + (f" (trigger '{trigger}')" if trigger else "")
+            (enabled if active else disabled).append(label)
+        log.info("Trigger-gated LoRAs — active: [%s]; skipped: [%s]",
+                 ", ".join(enabled) or "none", ", ".join(disabled) or "none")
 
     return wf
 
@@ -180,6 +188,13 @@ def inject_loras(workflow: dict, loras: list[dict], target: dict | None = None) 
     # Rewire the original MODEL consumers to the end of the chain.
     for node_id, key in model_consumers:
         workflow[node_id]["inputs"][key] = model_head
+
+    summary = ", ".join(
+        f"{l['name']} @ {float(l.get('strength', 1.0))}"
+        + (f" (trigger '{str(l.get('trigger') or '').strip()}')" if str(l.get('trigger') or '').strip() else "")
+        for l in loras
+    )
+    log.info("Injected %d LoRA(s): %s", len(loras), summary)
 
     return toggles
 
