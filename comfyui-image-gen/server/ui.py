@@ -1293,7 +1293,11 @@ class ServerWindow(QMainWindow):
         log.info("Window close requested — hiding to tray")
         event.ignore()
         self.hide()
-        self._tray.showMessage("Comfy-Gen-MCP", "Server is still running. Right-click tray icon to quit.", QSystemTrayIcon.MessageIcon.Information, 2000)
+        managed = bool(self._managed_check and self._managed_check())
+        msg = ("Server is still running. It stops automatically when Claude Desktop closes."
+               if managed else
+               "Server is still running. Right-click tray icon to quit.")
+        self._tray.showMessage("Comfy-Gen-MCP", msg, QSystemTrayIcon.MessageIcon.Information, 2000)
 
     def _poll_comfyui_worker(self):
         """Background thread: do the blocking reachability check off the GUI thread and cache the
