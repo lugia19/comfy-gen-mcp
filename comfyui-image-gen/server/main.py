@@ -784,10 +784,16 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
             return True
         return False
 
+    # Managed mode for the UI = "the shim is pinging us" = armed. Reuse pings-arm-it as the
+    # signal so the window can hide Quit/Uninstall and reword its footer (no separate flag).
+    def _managed() -> bool:
+        return _armed[0]
+
     if full_url:
-        show_url_window(full_url, on_ready=_store_window, stale_check=_stale)
+        show_url_window(full_url, on_ready=_store_window, stale_check=_stale, managed_check=_managed)
     else:
-        show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale)
+        show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale,
+                                   managed_check=_managed)
 
     # Window closed → cleanup → exit
     log.info("Window closed, shutting down...")

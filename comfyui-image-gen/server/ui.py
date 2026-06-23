@@ -691,9 +691,12 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
     return collect
 
 
-def run_settings_dialog():
+def run_settings_dialog(managed: bool = False):
     """Open the Settings dialog (modal). Loads all packs itself so the tray window doesn't
-    have to thread them through. Saving writes local_config.json; changes apply on restart."""
+    have to thread them through. Saving writes local_config.json; changes apply on restart.
+
+    managed: when True (shim-managed instance) the Uninstall button is omitted — uninstalling
+    is done from Claude Desktop's extension manager, not from a managed server window."""
     from server.model_pack import group_packs_by_tool, load_all_packs
 
     app = _get_app()  # noqa: F841 — ensures a QApplication exists
@@ -760,13 +763,15 @@ def run_settings_dialog():
         result["uninstall"] = True
         dialog.accept()
 
-    # Destructive action pinned to the bottom of the scrollable settings (not the always-visible row).
-    form_layout.addWidget(_make_hline())
-    uninstall_btn = QPushButton("Uninstall ComfyUI")
-    uninstall_btn.setToolTip("Permanently removes the ComfyUI install and all downloaded models. "
-                             "Use this before deleting the program.")
-    uninstall_btn.clicked.connect(_on_uninstall)
-    form_layout.addWidget(uninstall_btn)
+    # Destructive action pinned to the bottom of the scrollable settings (not the always-visible
+    # row). Omitted for shim-managed instances — those uninstall via Claude Desktop's extensions.
+    if not managed:
+        form_layout.addWidget(_make_hline())
+        uninstall_btn = QPushButton("Uninstall program")
+        uninstall_btn.setToolTip("Permanently removes the ComfyUI install and all downloaded models. "
+                                 "Use this before deleting the program.")
+        uninstall_btn.clicked.connect(_on_uninstall)
+        form_layout.addWidget(uninstall_btn)
 
     scroll.setWidget(inner)
     _fit_scroll_to_content(scroll, inner)  # size to content → never a horizontal scrollbar
@@ -1084,11 +1089,13 @@ class ServerWindow(QMainWindow):
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
     def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
-                 stale_check=None):
+                 stale_check=None, managed_check=None):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
         self._stale_check = stale_check
+        self._managed_check = managed_check
+        self._managed_applied: bool | None = None  # last managed state pushed to the UI
 
         # Cross-thread download support
         self._download_done = threading.Event()
@@ -1206,15 +1213,15 @@ class ServerWindow(QMainWindow):
             self._stale_poll.start(5000)
 
         quit_row = QHBoxLayout()
-        footer = QLabel("Closing this window hides it to the system tray; the server keeps running. "
-                        "Use Quit (here or from the tray icon) to stop the server.")
-        footer.setStyleSheet("color: #4CAF50;")
-        footer.setWordWrap(True)
-        quit_btn = QPushButton("Quit")
-        quit_btn.setFixedWidth(100)
-        quit_btn.clicked.connect(self._quit)
-        quit_row.addWidget(footer)
-        quit_row.addWidget(quit_btn)
+        self._footer = QLabel("Closing this window hides it to the system tray; the server keeps running. "
+                              "Use Quit (here or from the tray icon) to stop the server.")
+        self._footer.setStyleSheet("color: #4CAF50;")
+        self._footer.setWordWrap(True)
+        self._quit_btn = QPushButton("Quit")
+        self._quit_btn.setFixedWidth(100)
+        self._quit_btn.clicked.connect(self._quit)
+        quit_row.addWidget(self._footer)
+        quit_row.addWidget(self._quit_btn)
         layout.addLayout(quit_row)
 
         # System tray icon
@@ -1238,11 +1245,12 @@ class ServerWindow(QMainWindow):
 
         tray_menu.addSeparator()
 
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(self._quit)
-        tray_menu.addAction(quit_action)
+        self._quit_action = QAction("Quit", self)
+        self._quit_action.triggered.connect(self._quit)
+        tray_menu.addAction(self._quit_action)
 
         self._tray.setContextMenu(tray_menu)
+        self._apply_managed_ui()  # set initial Quit/footer state
         self._tray.activated.connect(self._on_tray_click)
         self._tray.show()
 
@@ -1305,8 +1313,25 @@ class ServerWindow(QMainWindow):
                 log.warning("ComfyUI status poll failed: %s", e)
             self._comfyui_poll_stop.wait(3.0)
 
+    def _apply_managed_ui(self):
+        """Hide the Quit affordances (window button + tray action) and reword the footer when the
+        shim is managing us (armed). Idempotent — only touches the UI when the state changes."""
+        managed = bool(self._managed_check and self._managed_check())
+        if managed == self._managed_applied:
+            return
+        self._managed_applied = managed
+        self._quit_btn.setVisible(not managed)
+        self._quit_action.setVisible(not managed)
+        if managed:
+            self._footer.setText("Closing this window hides it to the system tray. "
+                                 "The server stops automatically when Claude Desktop closes.")
+        else:
+            self._footer.setText("Closing this window hides it to the system tray; the server keeps "
+                                 "running. Use Quit (here or from the tray icon) to stop the server.")
+
     def _render_comfyui_status(self):
         """GUI thread: cheap render of the cached status — no network here."""
+        self._apply_managed_ui()
         state, tooltip = self._comfyui_state
         if state == "ready":
             self._comfyui_status.setText("ComfyUI: ready")
@@ -1333,7 +1358,8 @@ class ServerWindow(QMainWindow):
 
     def _open_settings(self):
         """Open the Settings dialog; show the restart notice on save, or quit on uninstall."""
-        outcome = run_settings_dialog()
+        managed = bool(self._managed_check and self._managed_check())
+        outcome = run_settings_dialog(managed=managed)
         if outcome.get("uninstall"):
             # ComfyUI was removed — the app must exit so the user can delete the program.
             self._quitting = True
@@ -1402,15 +1428,17 @@ class ServerWindow(QMainWindow):
         log.info("Download request completed: %s", title)
 
 
-def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
+def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed_check=None):
     """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
     stale_check: optional callable; if it returns True the window self-closes (managed mode).
+    managed_check: optional callable; True once the shim is managing us — hides Quit/Uninstall.
     """
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
-    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, **window_kwargs)
+    window = ServerWindow(title="MCP Server Running", stale_check=stale_check,
+                          managed_check=managed_check, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
@@ -1418,14 +1446,15 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
     app.exec()
 
 
-def show_url_window(url: str, on_ready=None, stale_check=None):
+def show_url_window(url: str, on_ready=None, stale_check=None, managed_check=None):
     """Show the tunnel URL window with tray icon. Blocks until Quit."""
-    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check)
+    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check, managed_check=managed_check)
 
 
-def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None):
+def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None, managed_check=None):
     """Show the minimal local server-running window with tray icon. Blocks until Quit."""
-    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check)
+    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready,
+                        stale_check=stale_check, managed_check=managed_check)
 
 
 def run_with_progress(label: str, task_fn) -> object:
