@@ -1385,12 +1385,18 @@ class ServerWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Could not find a ComfyUI installation to remove.")
             return
 
+        managed = bool(self._managed_check and self._managed_check())
+        restart_hint = (
+            "restart Claude Desktop to run setup again" if managed
+            else "restart it to run setup again"
+        )
+
         reply = QMessageBox.question(
             self,
             "Reinstall ComfyUI",
             f"This will delete the ComfyUI installation at:\n{install_path}\n\n"
             "Downloaded models will also be removed.\n"
-            "The application will then quit — restart it to run setup again.",
+            f"The application will then quit — {restart_hint}.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -1409,7 +1415,11 @@ class ServerWindow(QMainWindow):
         cfg.pop("setup_version", None)
         save_local_config(cfg)
 
-        QMessageBox.information(self, "Done", "ComfyUI has been removed. The application will now quit.\nRestart it to run setup again.")
+        done_hint = (
+            "Restart Claude Desktop to run setup again." if managed
+            else "Restart it to run setup again."
+        )
+        QMessageBox.information(self, "Done", f"ComfyUI has been removed. The application will now quit.\n{done_hint}")
         self._quitting = True
         QApplication.quit()
 
