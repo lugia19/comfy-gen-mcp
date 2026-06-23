@@ -236,28 +236,72 @@ def _force_remove_readonly(_func, path, _exc_info):
         pass
 
 
-def _kill_processes_in_dir(directory: str):
-    """Kill Python processes whose command line references the given directory."""
-    if platform.system() != "Windows":
-        return
+_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW — keep helper shell-outs from flashing a console
+
+
+def _pids_using_dir(directory: str) -> set[str]:
+    """Return PIDs of processes whose executable OR command line lives under `directory`.
+
+    Matches ANY process (not just python.exe) by ExecutablePath as well as CommandLine, so it
+    catches the venv interpreter holding a loaded .pyd even when its command line doesn't spell
+    out the install dir. Tries the modern CIM interface first (wmic is deprecated and absent on
+    newer / N Windows editions), falling back to wmic.
+    """
     norm_dir = os.path.normpath(directory).lower()
     my_pid = str(os.getpid())
+    pids: set[str] = set()
+
+    # Preferred: PowerShell CIM. Emit "PID|ExecutablePath|CommandLine" per process.
+    ps = (
+        "Get-CimInstance Win32_Process | "
+        "ForEach-Object { \"$($_.ProcessId)|$($_.ExecutablePath)|$($_.CommandLine)\" }"
+    )
     try:
         result = subprocess.run(
-            ["wmic", "process", "where", "name='python.exe'",
-             "get", "ProcessId,CommandLine", "/format:csv"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15, creationflags=_NO_WINDOW,
+        )
+        for line in result.stdout.splitlines():
+            pid, _, rest = line.partition("|")
+            pid = pid.strip()
+            if pid.isdigit() and pid != my_pid and norm_dir in rest.lower():
+                pids.add(pid)
+        if result.returncode == 0:
+            return pids
+    except Exception as e:
+        log.debug("CIM process scan failed: %s", e)
+
+    # Fallback: wmic (older Windows where it's still present).
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "get", "ProcessId,ExecutablePath,CommandLine", "/format:csv"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15, creationflags=_NO_WINDOW,
         )
         for line in result.stdout.splitlines():
             if norm_dir not in line.lower():
                 continue
-            parts = line.strip().split(",")
-            pid = parts[-1].strip() if parts else ""
+            pid = line.strip().split(",")[-1].strip()
             if pid.isdigit() and pid != my_pid:
-                log.info("Killing python process %s using install dir", pid)
-                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=5)
+                pids.add(pid)
     except Exception as e:
-        log.debug("Process kill failed: %s", e)
+        log.debug("wmic process scan failed: %s", e)
+
+    return pids
+
+
+def _kill_processes_in_dir(directory: str):
+    """Kill any process whose executable or command line references the given directory."""
+    if platform.system() != "Windows":
+        return
+    for pid in _pids_using_dir(directory):
+        log.info("Killing process %s using install dir", pid)
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
+                           capture_output=True, timeout=5, creationflags=_NO_WINDOW)
+        except Exception as e:
+            log.debug("taskkill %s failed: %s", pid, e)
 
 
 def remove_comfyui_dir(directory: str, comfy_cli: str | None = None) -> bool:
