@@ -715,7 +715,7 @@ def run_settings_dialog(managed: bool = False):
     collect = _build_settings_form(form_layout, packs, groups, inner)
     form_layout.addStretch()
 
-    result = {"saved": False, "uninstall": False}
+    result = {"saved": False, "uninstall": False, "restart": False}
 
     def _on_uninstall():
         comfy_cli = find_comfy_cli()
@@ -804,7 +804,15 @@ def run_settings_dialog(managed: bool = False):
     def _save():
         collect()
         result["saved"] = True
-        notice.setText("Settings saved. Restart the server to apply changes.")
+        notice.setText("Settings saved.")
+        reply = QMessageBox.question(
+            dialog, "Restart to apply",
+            "Settings saved. Restart now to apply the changes?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            result["restart"] = True
+            dialog.accept()
 
     save_btn.clicked.connect(_save)
     close_btn.clicked.connect(dialog.accept)
@@ -1089,12 +1097,13 @@ class ServerWindow(QMainWindow):
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
     def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
-                 stale_check=None, managed_check=None):
+                 stale_check=None, managed_check=None, restart_cb=None):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
         self._stale_check = stale_check
         self._managed_check = managed_check
+        self._restart_cb = restart_cb
         self._managed_applied: bool | None = None  # last managed state pushed to the UI
 
         # Cross-thread download support
@@ -1163,13 +1172,8 @@ class ServerWindow(QMainWindow):
         settings_row.addWidget(settings_btn)
         layout.addLayout(settings_row)
 
-        # Restart-to-apply notice (hidden until settings are saved)
-        if self._stale_check is not None:  # managed by the shim → relaunches on next use
-            restart_text = ("Settings saved — to apply, quit from the tray icon; "
-                            "the server relaunches automatically on next use.")
-        else:
-            restart_text = "Settings saved — restart the server to apply your changes."
-        self._restart_label = QLabel(restart_text)
+        # Shown when the user saves settings but declines the offered restart.
+        self._restart_label = QLabel("Settings saved — your changes apply after a restart.")
         self._restart_label.setStyleSheet("color: orange;")
         self._restart_label.setWordWrap(True)
         self._restart_label.setVisible(False)
@@ -1369,6 +1373,14 @@ class ServerWindow(QMainWindow):
             self._quitting = True
             QApplication.quit()
             return
+        if outcome.get("restart"):
+            # Spawn the replacement first (it waits for our port), then quit. Works in both modes.
+            if self._restart_cb:
+                self._restart_cb()
+            self._quitting = True
+            self._comfyui_poll_stop.set()
+            QApplication.quit()
+            return
         if outcome.get("saved"):
             self._restart_label.setVisible(True)
             # The notice adds a row; grow the window so it isn't clipped (never shrink).
@@ -1442,17 +1454,19 @@ class ServerWindow(QMainWindow):
         log.info("Download request completed: %s", title)
 
 
-def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed_check=None):
+def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed_check=None,
+                        restart_cb=None):
     """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
     stale_check: optional callable; if it returns True the window self-closes (managed mode).
     managed_check: optional callable; True once the shim is managing us — hides Quit/Uninstall.
+    restart_cb: optional callable; spawns a replacement server (Settings → Save → Restart).
     """
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
     window = ServerWindow(title="MCP Server Running", stale_check=stale_check,
-                          managed_check=managed_check, **window_kwargs)
+                          managed_check=managed_check, restart_cb=restart_cb, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
@@ -1460,15 +1474,17 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, ma
     app.exec()
 
 
-def show_url_window(url: str, on_ready=None, stale_check=None, managed_check=None):
+def show_url_window(url: str, on_ready=None, stale_check=None, managed_check=None, restart_cb=None):
     """Show the tunnel URL window with tray icon. Blocks until Quit."""
-    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check, managed_check=managed_check)
+    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check,
+                        managed_check=managed_check, restart_cb=restart_cb)
 
 
-def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None, managed_check=None):
+def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None,
+                               managed_check=None, restart_cb=None):
     """Show the minimal local server-running window with tray icon. Blocks until Quit."""
     _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready,
-                        stale_check=stale_check, managed_check=managed_check)
+                        stale_check=stale_check, managed_check=managed_check, restart_cb=restart_cb)
 
 
 def run_with_progress(label: str, task_fn) -> object:

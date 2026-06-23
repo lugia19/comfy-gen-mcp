@@ -93,6 +93,12 @@ _armed: list[bool] = [False]  # set True on the first /alive ping
 # prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
 MANAGED_GRACE_SECONDS = 180
 
+# Self-restart state (Settings → Save → Restart). _restarting tells the post-window cleanup to
+# leave ComfyUI running so the replacement re-attaches in ~1s instead of bouncing it. _START_CWD
+# preserves the cwd for the `-m server.main` launch form (run_http.py is cwd-independent).
+_restarting: list[bool] = [False]
+_START_CWD = os.getcwd()
+
 # Active pack per tool_name — looked up dynamically by handlers.
 # Updated after background setup completes so selections take effect without restart.
 _active_packs: dict[str, dict] = {}
@@ -735,6 +741,50 @@ def _build_http_app(args) -> tuple[FastMCP, str]:
     return mcp, mcp_path
 
 
+def restart_server() -> None:
+    """Relaunch this server process to apply settings, then let the caller quit.
+
+    Spawns a faithful copy of how we were started (sys.orig_argv reproduces the `-m server.main`
+    or run_http.py form) detached, with COMFY_RESTART=1 so the replacement waits for us to free
+    the port before binding. Sets _restarting so the post-window cleanup leaves ComfyUI running.
+    Works the same in standalone and managed mode — the shim isn't involved.
+    """
+    _restarting[0] = True
+    orig = list(getattr(sys, "orig_argv", []) or [])
+    cmd = [sys.executable] + orig[1:] if len(orig) > 1 else [sys.executable, "-m", "server.main", "--http"]
+
+    env = os.environ.copy()
+    env["COMFY_RESTART"] = "1"
+    log.info("Restarting server: %s (cwd=%s)", cmd, _START_CWD)
+
+    kwargs = {
+        "cwd": _START_CWD, "env": env,
+        "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+    try:
+        subprocess.Popen(cmd, **kwargs)
+    except Exception as e:
+        _restarting[0] = False
+        log.error("Failed to spawn replacement server: %s", e)
+        raise
+
+
+def _wait_for_port_free(port: int, timeout: float = 15.0) -> None:
+    """Block until nothing is listening on 127.0.0.1:port (the old instance has exited), or until
+    timeout. Returns immediately on a free port, so normal launches don't pay for this."""
+    import socket
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return  # nothing accepting connections → port is free
+        time.sleep(0.3)
+    log.warning("Port %d still busy after %.0fs; binding anyway", port, timeout)
+
+
 def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     """Run the HTTP server: optional tunnel, the MCP server thread, then the Qt window on the
     main thread (blocks until quit), then ComfyUI/tunnel cleanup."""
@@ -760,6 +810,11 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
             log.info("Tunnel URL: %s", full_url)
         except RuntimeError as e:
             log.error("Tunnel failed: %s", e)
+
+    # If we're the replacement spawned by a self-restart, wait for the outgoing instance to free
+    # the port before uvicorn binds it (closes the restart bind race). No-op on a fresh launch.
+    if os.environ.pop("COMFY_RESTART", None):
+        _wait_for_port_free(args.port)
 
     # Start MCP server in background daemon thread
     server_thread = threading.Thread(
@@ -790,16 +845,18 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         return _armed[0]
 
     if full_url:
-        show_url_window(full_url, on_ready=_store_window, stale_check=_stale, managed_check=_managed)
+        show_url_window(full_url, on_ready=_store_window, stale_check=_stale, managed_check=_managed,
+                        restart_cb=restart_server)
     else:
         show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale,
-                                   managed_check=_managed)
+                                   managed_check=_managed, restart_cb=restart_server)
 
     # Window closed → cleanup → exit
     log.info("Window closed, shutting down...")
     if tunnel_proc:
         tunnel_proc.kill()
-    if comfy_cli_path:
+    # On a self-restart, leave ComfyUI running so the replacement re-attaches instantly.
+    if comfy_cli_path and not _restarting[0]:
         stop_comfyui(comfy_cli_path, comfyui_process)
 
 

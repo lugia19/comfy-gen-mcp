@@ -38,6 +38,8 @@ SPAWN_GRACE_MESSAGE = (
 KEEPALIVE_INTERVAL = 15
 READINESS_POLL_INTERVAL = 1.0
 READINESS_SPAWN_TIMEOUT = 120.0
+# Consecutive missed keepalive pings before we treat the server as dead and respawn it.
+RESPAWN_AFTER_MISSES = 2
 
 
 # ── Endpoint resolution ───────────────────────────────────────────────
@@ -243,12 +245,22 @@ async def _warm_and_keepalive(alive_url: str) -> None:
         if not alive_url:
             return
 
+        # Keepalive + crash recovery: each ping arms the server's self-shutdown; if the server
+        # stops answering for RESPAWN_AFTER_MISSES consecutive pings it has died (crash, OOM, a
+        # botched self-restart), so bring it back. The threshold (~2 intervals) is far longer than
+        # a planned self-restart's ~1-2s port handoff, so we never spawn a competitor mid-restart.
+        global _spawn_attempted
+        misses = 0
         while True:
-            try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
-                    await client.get(alive_url)
-            except httpx.HTTPError:
-                pass
+            if await _is_alive(alive_url):
+                misses = 0
+            else:
+                misses += 1
+                if misses >= RESPAWN_AFTER_MISSES:
+                    log.warning("Server unreachable for %d pings — respawning", misses)
+                    _spawn_attempted = False  # allow a fresh spawn (the previous one is dead)
+                    _spawn_server()
+                    misses = 0
             await anyio.sleep(KEEPALIVE_INTERVAL)
     except Exception:
         # A crash here silently stops all pings → the managed server shuts down after the
