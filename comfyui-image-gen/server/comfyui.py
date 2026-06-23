@@ -50,16 +50,20 @@ def _comfy_env() -> dict[str, str]:
     return env
 
 
-def _run_comfy(comfy_cli: str, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+def _run_comfy(comfy_cli: str, *args: str, timeout: int = 60,
+               cwd: str | None = None) -> subprocess.CompletedProcess:
     """Run a comfy-cli command with the correct environment.
 
-    Handles env cleanup, encoding, and logging.
+    Handles env cleanup, encoding, and logging. ``cwd`` controls the working
+    directory; comfy-cli's dependency compiler writes its override.txt to a
+    path resolved against cwd, so it must be space-free (see install_comfyui).
     """
     cmd = [comfy_cli, *args]
-    log.info("Running: %s", cmd)
+    log.info("Running: %s (cwd=%s)", cmd, cwd)
     return subprocess.run(
         cmd,
         env=_comfy_env(),
+        cwd=cwd,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=timeout,
     )
@@ -296,7 +300,8 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
     if install_dir is None:
         install_dir = _default_install_dir()
 
-    os.makedirs(os.path.dirname(install_dir), exist_ok=True)
+    install_parent = os.path.dirname(install_dir)
+    os.makedirs(install_parent, exist_ok=True)
 
     if os.path.isdir(install_dir):
         remove_comfyui_dir(install_dir, comfy_cli)
@@ -306,7 +311,16 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
     if gpu in gpu_flag_map:
         cli_args.append(gpu_flag_map[gpu])
 
-    result = _run_comfy(comfy_cli, *cli_args, timeout=600)
+    # Run from the install dir's parent, NOT our (extension) cwd. comfy-cli's
+    # dependency compiler writes override.txt to a path resolved against the
+    # working dir and hands it to `uv` unquoted; if that path contains a space
+    # (our extension lives under "...\Claude Extensions\...") uv splits it and
+    # fails with "File not found: ...\Claude". The install parent is space-free
+    # for normal install locations.
+    if " " in install_parent:
+        log.warning("Install path contains a space (%s); comfy-cli/uv may fail. "
+                    "Consider installing ComfyUI to a space-free location.", install_parent)
+    result = _run_comfy(comfy_cli, *cli_args, timeout=600, cwd=install_parent)
 
     if result.returncode != 0:
         log.error("comfy install failed:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
