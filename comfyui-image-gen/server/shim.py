@@ -219,10 +219,15 @@ def build_server(mcp_url: str, alive_url: str) -> Server:
 
     @server.list_tools()
     async def _list_tools() -> list[types.Tool]:
-        # Kick off a spawn so the server is warming by the time a tool is called.
-        _spawn_server()
-        # Prefer the running server's authoritative list (reflects live config, can't drift);
-        # fall back to the locally-computed specs while the server is still coming up.
+        # Only spawn when the server isn't already up. An unconditional spawn here starts a
+        # duplicate on every Claude Desktop reload (Ctrl+R): the reload relaunches the shim,
+        # resetting _spawn_attempted, while the detached HTTP server is still alive. Mirror
+        # _call_tool's alive-guarded spawn.
+        if not await _is_alive(alive_url):
+            _spawn_server()
+            return _shim_tools()
+        # Server is up: prefer its authoritative list (reflects live config, can't drift),
+        # falling back to local specs on a transient read error.
         live = await _live_tools(mcp_url, alive_url)
         return live if live is not None else _shim_tools()
 
