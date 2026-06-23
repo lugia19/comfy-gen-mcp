@@ -2,14 +2,20 @@
 
 This is just a vibecoded garbo thing I wanted to play around with. It's an MCP server / installable MCPB that wires up ComfyUI with Claude for image generation.
 
-I didn't want to build a generic "do everything" ComfyUI controller — there are already projects for that. This one just generates images. Ships with built-in workflows for **Anima** (anime/illustration) and **Flux 2 Klein** (realistic/general-purpose), plus support for one custom workflow.
+I didn't want to build a generic "do everything" ComfyUI controller — there are already projects for that. This one just generates images. Ships with built-in workflows for **Anima** (anime/illustration), **Flux 2 Klein** and **Z-Image Turbo** (realistic/general-purpose), plus image editing and support for one custom workflow.
 
-Meant to be pretty dumb and plug and play.
+Meant to be pretty dumb and plug and play — **ComfyUI itself is installed for you** (via [comfy-cli](https://github.com/Comfy-Org/comfy-cli)) on first run, along with any custom nodes the models need. You don't need an existing ComfyUI install.
 
 ## Prerequisites
 
-- [ComfyUI Desktop](https://www.comfy.org/download) installed and run at least once (so it creates its config)
-- For Flux 2 Klein: the [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) custom node (you'll be guided through installing it, but if you want to pre-install it, you can do so via the Extensions button in ComfyUI)
+Basically nothing to set up by hand:
+
+- **ComfyUI is auto-installed** on first run into `~/.comfy-gen-mcp/comfyui/`. Your GPU is auto-detected (NVIDIA / AMD / Apple Silicon / CPU fallback) and the matching build is fetched.
+- **Required custom nodes** (e.g. [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) for the Flux/Z-Image packs) are installed automatically the first time you use a model that needs them.
+
+What you *do* want:
+- A reasonably capable GPU is strongly recommended (CPU works but is slow). Rough VRAM: Anima ~4 GB, Flux 2 Klein ~6 GB, Z-Image Turbo 8 GB+.
+- Disk space — roughly **6–10 GB per model pack** you choose to download.
 
 ## Installation
 
@@ -21,12 +27,12 @@ Best for local use with Claude Desktop.
 
 1. Download the `.mcpb` file from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
 2. In Claude Desktop: Settings > Extensions > Advanced Settings > Install Extension
-3. A setup window should appear — if it doesn't, restart Claude Desktop
+3. A setup window should appear — if it doesn't (or nothing shows up after a couple minutes), restart Claude Desktop
 4. Pick which models to download, configure artist styles, etc.
 5. If you skip a model pack, it'll download automatically when you first try to use it
 
-**Updating to a new version**: Go to your settings, extensions, and uninstall it. Then reinstall it.
-If this doesn't work, go to advanced settings, click on "Open extensions folder", close the Claude Desktop client, and manually delete it. (May need a restart).
+**Updating:** server-side fixes update themselves — the extension pulls the latest server code on launch, so most bug fixes reach you without reinstalling. For larger updates (new tools/models or a new shim), grab the latest `.mcpb`: go to Settings > Extensions, uninstall it, then reinstall.
+If uninstall misbehaves, go to advanced settings, click "Open extensions folder", close Claude Desktop, and manually delete it (may need a restart).
 
 ### Option 2: Standalone MCP Server (exe / .app) — Windows & macOS
 
@@ -62,22 +68,38 @@ When using the standalone server with a Cloudflare tunnel, a window will show yo
 
 The standalone server is what you want for remote access. However, the **Claude mobile app does not display tool-generated images**. Use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/nicekid1/Claude-Enhancement-Suite) installed.
 
+## Models & tools
+
+| Tool | Model pack(s) | Notes |
+|------|---------------|-------|
+| `generate_illustrated_image` | **Anima** | Anime/illustration; booru tags + natural language. ~6 GB, ~4 GB VRAM. Can't render text — use `edit_image` afterward to add it. |
+| `generate_realistic_image` | **Flux 2 Klein** or **Z-Image Turbo** | Realistic/general-purpose. Pick one in Settings — **Z-Image Turbo is the default** (~9 GB, 8 GB+ VRAM); Flux 2 Klein is ~8 GB, ~6 GB VRAM. |
+| `edit_image` | **Flux 2 Klein (Edit)** | img2img editing from a text prompt. Takes a local file path or public URL; optional second reference image. |
+| `generate_custom_image` | *(your workflow)* | Only appears if you set a custom workflow path in Settings. |
+| `fetch_result` | — | Retrieves a generation that's still running (when a tool returns a `request_token`). |
+
+Packs you don't download up front are fetched automatically the first time you use the corresponding tool.
+
 ## Configuration
 
-**MCPB (Claude Desktop):** Settings > Extensions > Configure for comfyui-image-gen
+Everything is managed in the **Settings panel** — click **Settings** in the Comfy-Gen-MCP server window (look for the tray icon), or in Claude Desktop go to Settings > Extensions > Configure for comfyui-image-gen.
 
-**Standalone exe:** Settings are stored in `local_config.json` next to the executable. On first run the file is auto-created with all user-editable keys set to their defaults, so you can open it and edit in place. The first-run wizard handles model downloads.
+Settings include:
+- **Model selection** — which pack backs `generate_realistic_image` (Flux 2 Klein vs Z-Image Turbo)
+- **Anima artist styles** — @artist tags blended into Anima prompts (browse them at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
+- **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Anima-only for now.
+- **Anima sampling steps** — default 30; higher is slower but can improve quality
+- **ComfyUI URL** — default `http://127.0.0.1:8188`. If that port is taken, the managed ComfyUI automatically falls back to a free port. Only change this if you want to point at your *own* already-running ComfyUI instead of the managed one.
+- **Custom workflow** — path to a ComfyUI workflow exported in **API format** (.json). Setting it adds the `generate_custom_image` tool.
+- **Custom workflow prompt node** — title of the node that receives the prompt text (auto-detected from the first KSampler's positive input if left blank).
+- **Expose via Cloudflare tunnel** *(advanced, standalone only)* — serve the MCP endpoint over a public tunnel instead of localhost.
 
-Available settings (JSON keys in `local_config.json`):
-- `anima_artists` — comma-separated list of @artist tags (browse styles at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
-- `comfyui_url` — default `http://127.0.0.1:8000`. **Change this if you use portable/standalone ComfyUI** or run on a non-default port — include the full URL with scheme and port (e.g. `http://127.0.0.1:8188`).
-- `comfyui_exe` — only needed for auto-launch of ComfyUI Desktop in a non-default install path. Leave empty for portable installs you start yourself.
-- `custom_workflow` — path to a ComfyUI workflow exported in API format (.json)
-- `custom_workflow_prompt_node` — title of the node in your custom workflow that receives the prompt text (auto-detected if empty)
+Under the hood these are stored in `~/.comfy-gen-mcp/local_config.json`, which is auto-created with defaults on first run. You can edit it by hand if you like, but the Settings panel is the easy path.
 
 ## Troubleshooting
 
-- **If anything fails after installing GGUF:** restart Claude Desktop, ComfyUI, or your computer. ComfyUI sometimes leaves ghost processes behind.
-- **"Cannot find ComfyUI's models directory":** open ComfyUI Desktop and complete its initial setup first. It needs to run at least once to create its config file.
-- **Slow generation / timeouts:** If generation takes longer than ~55 seconds, the server will return a request token. Claude will automatically retry to fetch the result. On slower hardware (especially macOS with MPS), this is normal.
+- **Nothing shows up after a couple minutes:** restart Claude Desktop. (First-run ComfyUI install + model downloads can take a while; check progress via **Settings > Open Logs Folder**.)
+- **Something fails after a custom node install:** restart Claude Desktop, ComfyUI, or your computer. ComfyUI sometimes leaves ghost processes behind.
+- **Slow generation / timeouts:** if a generation takes longer than ~55 seconds, the tool returns a request token and Claude automatically retries to fetch the result. On slower hardware (especially macOS with MPS), this is normal.
+- **Diagnostics:** use **Settings > Open Logs Folder** — everything (server + ComfyUI) is consolidated there.
 - **macOS "damaged app" error:** run `xattr -cr "/Applications/Comfy-Gen-MCP.app"` in Terminal.
