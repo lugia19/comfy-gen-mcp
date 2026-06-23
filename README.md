@@ -39,8 +39,8 @@ If uninstall misbehaves, go to advanced settings, click "Open extensions folder"
 Best for remote access via claude.ai, or for macOS users (since the MCPB can't display images properly on macOS without the QoL extension, which isn't available on Mac).
 
 **Windows:**
-1. Download the `.exe` from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
-2. Run it — a setup wizard will guide you through first-time configuration
+1. Download the Windows `.zip` from the [releases page](https://github.com/lugia19/comfy-dxt/releases)
+2. Extract it, then run `Comfy-Gen-MCP.exe` (keep the `installer-resources\` folder next to it) — a setup wizard will guide you through first-time configuration
 3. Choose between a Cloudflare tunnel (easiest) or your own reverse proxy
 4. The server window can be minimized to the system tray
 

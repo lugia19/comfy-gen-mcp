@@ -1,0 +1,9 @@
+{
+  "repo_url": "https://github.com/lugia19/comfy-dxt.git",
+  "repo_dir": "comfy-dxt",
+  "startup_script": "run_http.py",
+  "use_pythonw": false,
+  "venv_folder": "venv",
+  "python_version": "3.12",
+  "icon": "icon.png"
+}

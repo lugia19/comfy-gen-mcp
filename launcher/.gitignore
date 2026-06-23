@@ -1,0 +1,11 @@
+# Build outputs (exe, .app, zips, app.ico/app.icns).
+builds/
+
+# Tool cache build-all.ps1 downloads on first run (uv, rcedit, rcodesign, lipo,
+# mkicon) — large, fetched on demand. Keep the committed icon.png.
+resources/*
+!resources/icon.png
+
+# Stray bare `go build` output (the module is named pygo-bootstrap).
+/pygo-bootstrap
+/pygo-bootstrap.exe

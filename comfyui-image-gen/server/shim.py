@@ -118,21 +118,25 @@ def _sync_bootstrap_dist() -> str:
     """Copy the bundled bootstrapper dist into the stable runtime dir, refreshing only files
     that changed (so a newer mcpb updates the dist) and skipping any that are locked — e.g.
     the .exe of an instance that's still running, whose existing copy is what we'd use anyway.
-    Returns the runtime exe path."""
+    Walks the whole tree so the nested installer-resources\\ dir (repo.json, install.py, uv.exe,
+    icon.png) — which the launcher reads from beside the exe — is copied too. Returns the
+    runtime exe path."""
     os.makedirs(_RUNTIME_DIR, exist_ok=True)
-    for name in os.listdir(_BUNDLED_BOOTSTRAP_DIR):
-        src = os.path.join(_BUNDLED_BOOTSTRAP_DIR, name)
-        if not os.path.isfile(src):
-            continue
-        dst = os.path.join(_RUNTIME_DIR, name)
-        try:
-            if os.path.isfile(dst):
-                s, d = os.stat(src), os.stat(dst)
-                if s.st_size == d.st_size and abs(s.st_mtime - d.st_mtime) < 2:
-                    continue  # unchanged (copy2 preserves mtime) — leave it
-            shutil.copy2(src, dst)  # copy2 preserves mtime for the comparison above
-        except OSError as e:
-            log.warning("Could not refresh bootstrap file %s: %s", name, e)
+    for root, _dirs, files in os.walk(_BUNDLED_BOOTSTRAP_DIR):
+        rel = os.path.relpath(root, _BUNDLED_BOOTSTRAP_DIR)
+        dst_root = _RUNTIME_DIR if rel == os.curdir else os.path.join(_RUNTIME_DIR, rel)
+        os.makedirs(dst_root, exist_ok=True)
+        for name in files:
+            src = os.path.join(root, name)
+            dst = os.path.join(dst_root, name)
+            try:
+                if os.path.isfile(dst):
+                    s, d = os.stat(src), os.stat(dst)
+                    if s.st_size == d.st_size and abs(s.st_mtime - d.st_mtime) < 2:
+                        continue  # unchanged (copy2 preserves mtime) — leave it
+                shutil.copy2(src, dst)  # copy2 preserves mtime for the comparison above
+            except OSError as e:
+                log.warning("Could not refresh bootstrap file %s: %s", os.path.join(rel, name), e)
     return os.path.join(_RUNTIME_DIR, _BOOTSTRAP_EXE)
 
 

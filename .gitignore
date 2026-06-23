@@ -6,6 +6,6 @@ dist/*
 comfyui-image-gen/server/__pycache__/*
 comfyui-image-gen/local_config.json
 comfyui-image-gen/logs/
-# Bootstrapper dist staged into the mcpb at build time (Go exe + uv.exe, ~30MB) — produced by
-# build_mcpb.bat from build_http_dist.ps1 output, never committed.
+# Bootstrapper dist staged into the mcpb at build time (Go exe + installer-resources\, ~30MB)
+# — produced by build_mcpb.ps1 from launcher\build-all.ps1 output, never committed.
 comfyui-image-gen/bootstrap/
