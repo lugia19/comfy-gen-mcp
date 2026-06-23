@@ -762,7 +762,9 @@ def restart_server() -> None:
         "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
     }
     if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+        # CREATE_NO_WINDOW (not DETACHED_PROCESS) — gives python.exe an invisible console so the
+        # restart doesn't flash a window, matching how the bootstrapper's install.py launches us.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     try:
         subprocess.Popen(cmd, **kwargs)
     except Exception as e:
