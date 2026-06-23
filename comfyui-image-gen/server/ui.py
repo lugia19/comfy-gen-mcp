@@ -711,6 +711,63 @@ def run_settings_dialog():
     form_layout = QVBoxLayout(inner)
     collect = _build_settings_form(form_layout, packs, groups, inner)
     form_layout.addStretch()
+
+    result = {"saved": False, "uninstall": False}
+
+    def _on_uninstall():
+        comfy_cli = find_comfy_cli()
+        install_path = None
+        if comfy_cli:
+            from server.comfyui import _comfy_which
+            install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli)
+        if not install_path or not os.path.isdir(install_path):
+            install_path = _default_install_dir()
+        app_dir = os.path.dirname(_default_install_dir())  # ~/.comfy-gen-mcp
+
+        if not install_path or not os.path.isdir(install_path):
+            QMessageBox.information(
+                dialog, "Uninstall",
+                "No ComfyUI installation was found to remove.\n\n"
+                "To finish uninstalling Comfy-Gen-MCP, remove the extension in Claude Desktop "
+                f"(Settings → Extensions). You may also delete:\n{app_dir}")
+            return
+
+        reply = QMessageBox.question(
+            dialog, "Uninstall ComfyUI",
+            f"This permanently deletes ComfyUI and all downloaded models at:\n{install_path}\n\n"
+            "The app will then quit so you can remove the program. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        ok = run_off_main("Uninstalling ComfyUI…", remove_comfyui_dir, install_path, comfy_cli)
+        if not ok:
+            QMessageBox.warning(
+                dialog, "Uninstall",
+                "Could not fully delete the installation — some files may still be in use.\n\n"
+                f"Path: {install_path}\n\nClose anything using it and delete it manually.")
+            return
+
+        QMessageBox.information(
+            dialog, "Uninstalled",
+            "ComfyUI and downloaded models have been removed.\n\n"
+            "To finish uninstalling Comfy-Gen-MCP:\n"
+            "• Remove the 'Comfy-Gen-MCP' extension in Claude Desktop (Settings → Extensions).\n"
+            f"• You may also delete this folder:\n  {app_dir}\n\n"
+            "The app will now quit.")
+        result["uninstall"] = True
+        dialog.accept()
+
+    # Destructive action pinned to the bottom of the scrollable settings (not the always-visible row).
+    form_layout.addWidget(_make_hline())
+    uninstall_btn = QPushButton("Uninstall ComfyUI")
+    uninstall_btn.setToolTip("Permanently removes the ComfyUI install and all downloaded models. "
+                             "Use this before deleting the program.")
+    uninstall_btn.clicked.connect(_on_uninstall)
+    form_layout.addWidget(uninstall_btn)
+
     scroll.setWidget(inner)
     _fit_scroll_to_content(scroll, inner)  # size to content → never a horizontal scrollbar
     outer.addWidget(scroll)
@@ -739,17 +796,15 @@ def run_settings_dialog():
     btn_row.addWidget(close_btn)
     outer.addLayout(btn_row)
 
-    saved = {"v": False}
-
     def _save():
         collect()
-        saved["v"] = True
+        result["saved"] = True
         notice.setText("Settings saved. Restart the server to apply changes.")
 
     save_btn.clicked.connect(_save)
     close_btn.clicked.connect(dialog.accept)
     dialog.exec()
-    return saved["v"]
+    return result
 
 
 # ── 2. First-Time Setup Wizard ───────────────────────────────────────
@@ -1129,6 +1184,7 @@ class ServerWindow(QMainWindow):
         troubleshoot_row.addWidget(reinstall_btn)
         layout.addLayout(troubleshoot_row)
 
+        self._comfyui_failed_notified = False  # one tray nudge per failure episode
         self._comfyui_poll = QTimer(self)
         self._comfyui_poll.timeout.connect(self._poll_comfyui)
         self._comfyui_poll.start(3000)
@@ -1223,18 +1279,44 @@ class ServerWindow(QMainWindow):
         self._tray.showMessage("Comfy-Gen-MCP", "Server is still running. Right-click tray icon to quit.", QSystemTrayIcon.MessageIcon.Information, 2000)
 
     def _poll_comfyui(self):
-        from server.comfyui import _check_url
+        from server.comfyui import _check_url, get_launch_error, set_launch_error
         from server.config import COMFYUI_DEFAULT_URL
         if _check_url(COMFYUI_DEFAULT_URL):
             self._comfyui_status.setText("ComfyUI: ready")
             self._comfyui_status.setStyleSheet("color: #4CAF50;")
+            self._comfyui_status.setToolTip("")
+            self._comfyui_failed_notified = False
+            set_launch_error(None)  # healthy now — clear any stale failure
+            return
+
+        err = get_launch_error()
+        if err:
+            self._comfyui_status.setText("ComfyUI: failed to start")
+            self._comfyui_status.setStyleSheet("color: #f44336;")
+            self._comfyui_status.setToolTip(err)
+            # Surface it once: the window is usually hidden in the tray, so nudge + raise.
+            if not self._comfyui_failed_notified:
+                self._comfyui_failed_notified = True
+                self._tray.showMessage(
+                    "ComfyUI failed to start",
+                    "Open Comfy-Gen-MCP and click Reinstall to fix it.",
+                    QSystemTrayIcon.MessageIcon.Warning, 5000,
+                )
+                self._show_window()
         else:
             self._comfyui_status.setText("ComfyUI: starting...")
             self._comfyui_status.setStyleSheet("color: orange;")
+            self._comfyui_status.setToolTip("")
 
     def _open_settings(self):
-        """Open the Settings dialog; if anything was saved, show the restart notice."""
-        if run_settings_dialog():
+        """Open the Settings dialog; show the restart notice on save, or quit on uninstall."""
+        outcome = run_settings_dialog()
+        if outcome.get("uninstall"):
+            # ComfyUI was removed — the app must exit so the user can delete the program.
+            self._quitting = True
+            QApplication.quit()
+            return
+        if outcome.get("saved"):
             self._restart_label.setVisible(True)
             # The notice adds a row; grow the window so it isn't clipped (never shrink).
             self.resize(self.width(), max(self.height(), self.sizeHint().height()))

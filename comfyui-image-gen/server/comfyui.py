@@ -392,6 +392,21 @@ def find_comfyui_url(custom_url: str | None = None) -> str | None:
 
 # ── ComfyUI launching ───────────────────────────────────────────────
 
+# Last ComfyUI launch failure, surfaced in the server window's status poll (get_launch_error).
+# None while ComfyUI is starting/healthy; set to a user-facing message on a failed launch so the
+# window can show "failed to start" and nudge the user toward Reinstall instead of hanging on
+# "starting...".
+_launch_error: list[str | None] = [None]
+
+
+def get_launch_error() -> str | None:
+    return _launch_error[0]
+
+
+def set_launch_error(msg: str | None) -> None:
+    _launch_error[0] = msg
+
+
 def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
                    custom_url: str | None = None) -> tuple[subprocess.Popen, str]:
     """Launch ComfyUI in the background via comfy-cli and wait until it's ready.
@@ -399,6 +414,7 @@ def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
     Returns (process, url).
     """
     url = custom_url or f"http://127.0.0.1:{port}"
+    set_launch_error(None)  # optimistic: new attempt clears any prior failure
 
     log.info("Launching ComfyUI via comfy-cli: port=%d", port)
     args = [comfy_cli, "launch", "--", "--port", str(port)]
@@ -423,6 +439,10 @@ def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
         if proc.poll() is not None:
             log_fh.close()
             log.error("ComfyUI exited during startup (code %d), see %s", proc.returncode, comfyui_log)
+            set_launch_error(
+                f"ComfyUI exited during startup (exit code {proc.returncode}). "
+                "See the log (Settings → Open Logs Folder) for details — a Reinstall often fixes this."
+            )
             raise RuntimeError(f"ComfyUI exited during startup (exit code {proc.returncode}). Check {comfyui_log}")
         if i % 10 == 0 and i > 0:
             log.info("Still waiting for ComfyUI to start... (%ds)", i)
@@ -431,6 +451,10 @@ def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
     log.error("ComfyUI failed to start within %d seconds", LAUNCH_TIMEOUT)
     proc.terminate()
     log_fh.close()
+    set_launch_error(
+        f"ComfyUI did not start within {LAUNCH_TIMEOUT}s. "
+        "See the log (Settings → Open Logs Folder) for details — a Reinstall often fixes this."
+    )
     raise TimeoutError(f"ComfyUI did not start within {LAUNCH_TIMEOUT} seconds.")
 
 
