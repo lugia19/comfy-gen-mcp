@@ -1020,49 +1020,7 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
         log.info("Download cancelled by user")
 
 
-# ── 4. Tunnel Choice ─────────────────────────────────────────────────
-
-def show_tunnel_choice(local_cfg: dict, save_fn) -> bool:
-    """Show tunnel vs reverse proxy choice dialog. Returns True for tunnel."""
-    app = _get_app()
-    result = {"use_tunnel": True}
-
-    dialog = QDialog()
-    dialog.setWindowTitle("Comfy-Gen-MCP — Connection")
-    dialog.setMinimumWidth(400)
-
-    layout = QVBoxLayout(dialog)
-    layout.addWidget(QLabel("<h3>How do you want to expose the server?</h3>"))
-
-    tunnel_radio = QRadioButton("Cloudflare tunnel (easiest, URL changes on restart)")
-    tunnel_radio.setChecked(True)
-    proxy_radio = QRadioButton("I have my own domain / reverse proxy")
-    layout.addWidget(tunnel_radio)
-    layout.addWidget(proxy_radio)
-
-    remember_cb = QCheckBox("Remember this choice")
-    layout.addWidget(remember_cb)
-
-    start_btn = QPushButton("Start")
-
-    def on_start():
-        result["use_tunnel"] = tunnel_radio.isChecked()
-        if remember_cb.isChecked():
-            local_cfg["use_tunnel"] = result["use_tunnel"]
-            save_fn(local_cfg)
-            log.info("Saved tunnel preference: %s", result["use_tunnel"])
-        dialog.accept()
-
-    start_btn.clicked.connect(on_start)
-    layout.addWidget(start_btn)
-
-    if dialog.exec() != QDialog.DialogCode.Accepted:
-        log.info("Tunnel choice cancelled by user")
-        sys.exit(0)
-    return result["use_tunnel"]
-
-
-# ── 5. URL Window (with tray icon) ───────────────────────────────────
+# ── URL Window (with tray icon) ──────────────────────────────────────
 
 class ServerWindow(QMainWindow):
     """Main server window with system tray icon support."""
@@ -1071,7 +1029,7 @@ class ServerWindow(QMainWindow):
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
     def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
-                 stale_check=None, managed: bool = False):
+                 stale_check=None):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
@@ -1096,9 +1054,9 @@ class ServerWindow(QMainWindow):
         self._url_entry.setReadOnly(True)
         layout.addWidget(self._url_entry)
 
-        # When launched by the stdio shim (Claude Desktop), the connection is already wired
-        # up internally — the URL is only useful for reaching this server from elsewhere.
-        if managed:
+        # Local (non-tunnel) mode: Claude Desktop reaches this server internally, so the
+        # localhost URL is only useful for reaching it from elsewhere.
+        if url is None:
             managed_note = QLabel(
                 "You don't need this URL for Claude Desktop — it's already set up to work. "
                 "It's only needed if you want to reach this server from another machine."
@@ -1339,16 +1297,15 @@ class ServerWindow(QMainWindow):
         log.info("Download request completed: %s", title)
 
 
-def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed: bool = False):
+def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None):
     """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
     stale_check: optional callable; if it returns True the window self-closes (managed mode).
-    managed: True when spawned by the stdio shim (adds a note that the URL is optional).
     """
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
-    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, managed=managed, **window_kwargs)
+    window = ServerWindow(title="MCP Server Running", stale_check=stale_check, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
@@ -1356,14 +1313,14 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, ma
     app.exec()
 
 
-def show_url_window(url: str, on_ready=None, stale_check=None, managed: bool = False):
+def show_url_window(url: str, on_ready=None, stale_check=None):
     """Show the tunnel URL window with tray icon. Blocks until Quit."""
-    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check, managed=managed)
+    _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check)
 
 
-def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None, managed: bool = False):
+def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None):
     """Show the minimal local server-running window with tray icon. Blocks until Quit."""
-    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check, managed=managed)
+    _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready, stale_check=stale_check)
 
 
 def run_with_progress(label: str, task_fn) -> object:

@@ -145,19 +145,20 @@ def _popen_detached(args: list[str], cwd: str, env: dict) -> None:
 
 
 def _spawn_server() -> None:
-    """Spawn the real HTTP server detached, marked as managed by this shim.
+    """Spawn the real HTTP server detached.
 
     Normally this launches the bundled bootstrapper (self-updating runtime); from a source
-    checkout it falls back to running this checkout's server directly. Either way the server
-    learns it's shim-managed via COMFY_MANAGED_BY, and is pointed at the shim's config file via
-    COMFY_CONFIG_PATH (the bootstrapper chain doesn't forward CLI args, so both go through env)."""
+    checkout it falls back to running this checkout's server directly. The server is pointed at
+    the shim's config file via COMFY_CONFIG_PATH so they agree on the mcp_path token (the
+    bootstrapper chain doesn't forward CLI args, so it goes through env). No managed flag is
+    passed: the shim's /alive keepalive pings (see _warm_and_keepalive) arm the server's
+    self-shutdown on their own."""
     global _spawn_attempted
     if _spawn_attempted or os.environ.get("SHIM_NO_SPAWN"):
         return
     _spawn_attempted = True
 
     env = os.environ.copy()
-    env["COMFY_MANAGED_BY"] = str(os.getpid())
     env["COMFY_CONFIG_PATH"] = LOCAL_CONFIG_PATH
 
     if _bootstrap_available():
@@ -170,7 +171,7 @@ def _spawn_server() -> None:
             log.error("Bootstrapper spawn failed (%s); falling back to direct spawn", e)
 
     cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    args = [sys.executable, "-m", "server.main", "--http", "--managed-by", str(os.getpid())]
+    args = [sys.executable, "-m", "server.main", "--http"]
     log.info("Spawning HTTP server directly: %s (cwd=%s)", args, cwd)
     try:
         _popen_detached(args, cwd, env)
@@ -227,7 +228,8 @@ def build_server(mcp_url: str, alive_url: str) -> Server:
 
 async def _warm_and_keepalive(alive_url: str) -> None:
     """Background task: spawn the HTTP server and wait for it to come up, then keepalive-ping
-    for the rest of the session (a --managed-by server self-shuts when the pings go stale).
+    for the rest of the session. These pings arm the server's self-shutdown: it stays alive
+    while we ping and shuts down once they go stale (shim gone).
 
     The tool list no longer depends on this — it's computed locally in _list_tools."""
     try:

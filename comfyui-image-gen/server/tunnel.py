@@ -1,7 +1,6 @@
 """Cloudflare tunnel and clipboard utilities for HTTP connector mode.
 
-UI functions (show_tunnel_choice, show_url_window, show_server_running_window)
-have been moved to server/ui.py (PyQt6).
+UI functions (show_url_window, show_server_running_window) live in server/ui.py (PyQt6).
 """
 
 import io

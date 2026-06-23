@@ -82,10 +82,13 @@ models_dir: str | None = None
 _downloading: dict[str, bool] = {}
 _server_window = None  # set in HTTP mode for cross-thread download UI
 
-# Managed-lifecycle state: when this server is spawned by the stdio shim (--managed-by),
-# the shim keepalive-pings GET /alive. If the pings go stale (or the shim dies), the
-# server shuts itself down. _keepalive_ts holds the monotonic time of the last ping.
+# Managed-lifecycle state — "pings arm it". Only the stdio shim ever hits GET /alive, so being
+# pinged IS the signal that this server is shim-managed: the first ping ARMS it, and once armed
+# it self-shuts-down when the pings go stale (shim died/crashed/wedged). A server nobody pings —
+# the standalone HTTP instance the user runs directly — is never armed and stays up. No flag
+# crosses the bootstrapper; the ping we already send does the whole job.
 _keepalive_ts: list[float] = [0.0]
+_armed: list[bool] = [False]  # set True on the first /alive ping
 # 3 minutes: long enough that a stalled shim (e.g. the user sitting on a tool-permission
 # prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
 MANAGED_GRACE_SECONDS = 180
@@ -672,9 +675,6 @@ def _parse_args():
     parser.add_argument("--http", action="store_true", help="Run as HTTP connector instead of stdio (DXT)")
     parser.add_argument("-p", "--port", type=int, default=9247, help="HTTP server port (default: 9247)")
     parser.add_argument("-t", "--tunnel", nargs="?", const="temp", help="Start a cloudflare tunnel (HTTP mode only)")
-    parser.add_argument("--managed-by", type=int, default=None,
-                        help="PID of the stdio shim that spawned this server (enables managed lifecycle: "
-                             "local-only, self-shutdown when the shim's keepalive goes stale)")
     return parser.parse_args()
 
 
@@ -721,14 +721,15 @@ def _build_http_app(args) -> tuple[FastMCP, str]:
     )
     log.info("HTTP mode: port=%d, path=%s", args.port, mcp_path)
 
-    # Liveness + keepalive endpoint. The shim polls this to know the server is up,
-    # and (in managed mode) pings it to keep the server alive.
+    # Liveness + keepalive endpoint. The shim polls this to know the server is up, and pings it
+    # to keep the server alive. The first hit arms the managed-shutdown timer (see _armed).
     _keepalive_ts[0] = time.monotonic()
 
     @mcp.custom_route("/alive", methods=["GET"])
     async def _alive(request):
         from starlette.responses import PlainTextResponse
         _keepalive_ts[0] = time.monotonic()
+        _armed[0] = True
         return PlainTextResponse("ok")
 
     return mcp, mcp_path
@@ -738,21 +739,15 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     """Run the HTTP server: optional tunnel, the MCP server thread, then the Qt window on the
     main thread (blocks until quit), then ComfyUI/tunnel cleanup."""
     from server.tunnel import start_cloudflare_tunnel
-    from server.ui import show_tunnel_choice, show_url_window, show_server_running_window, run_with_progress
+    from server.ui import show_url_window, show_server_running_window, run_with_progress
 
     local_cfg = load_local_config()
 
-    # Determine tunnel mode. A shim-managed server is always local-only (no prompt).
-    managed = args.managed_by is not None
+    # Tunnel mode is opt-in via --tunnel or the Settings "Expose via Cloudflare tunnel" toggle
+    # (use_tunnel in local_config). No startup prompt: a shim-managed instance just leaves it
+    # off, and standalone users set it in the wizard's settings page or the Settings panel.
     tunnel_proc = None
-    if managed:
-        use_tunnel = False
-    else:
-        use_tunnel = args.tunnel is not None
-        if not use_tunnel and "use_tunnel" in local_cfg:
-            use_tunnel = local_cfg["use_tunnel"]
-        elif not use_tunnel and args.tunnel is None:
-            use_tunnel = show_tunnel_choice(local_cfg, save_local_config)
+    use_tunnel = args.tunnel is not None or bool(local_cfg.get("use_tunnel"))
 
     # Start tunnel if needed
     full_url = None
@@ -779,11 +774,10 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         global _server_window
         _server_window = w
 
-    # In managed mode the window self-closes once the shim's keepalive pings go stale — when
-    # the shim (Claude Desktop) is gone, the pings stop and the age crosses the grace window.
-    # (No PID check: pings already cover shim death, and it avoids a psutil dependency.)
+    # Once armed (the shim has pinged at least once), the window self-closes when the pings go
+    # stale — the shim (Claude Desktop) is gone. A never-pinged standalone server never arms.
     def _stale() -> bool:
-        if not managed:
+        if not _armed[0]:
             return False
         if time.monotonic() - _keepalive_ts[0] > MANAGED_GRACE_SECONDS:
             log.info("Shim keepalive stale (>%ds) — shutting down", MANAGED_GRACE_SECONDS)
@@ -791,9 +785,9 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         return False
 
     if full_url:
-        show_url_window(full_url, on_ready=_store_window, stale_check=_stale, managed=managed)
+        show_url_window(full_url, on_ready=_store_window, stale_check=_stale)
     else:
-        show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale, managed=managed)
+        show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale)
 
     # Window closed → cleanup → exit
     log.info("Window closed, shutting down...")
@@ -805,14 +799,6 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
 
 def main():
     args = _parse_args()
-
-    # The bootstrapper chain (Go launcher -> install.py -> run_http.py) doesn't forward CLI
-    # args, so the shim passes the managed-by PID via the COMFY_MANAGED_BY env var instead.
-    # Honor it when --managed-by wasn't given on the command line.
-    if args.managed_by is None:
-        env_pid = os.environ.get("COMFY_MANAGED_BY", "").strip()
-        if env_pid.isdigit():
-            args.managed_by = int(env_pid)
 
     # DXT/stdio entry: run the thin shim, which starts the real HTTP server (if needed)
     # and proxies MCP calls to it. All real logic lives in the HTTP server below.
