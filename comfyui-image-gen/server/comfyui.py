@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -451,13 +452,52 @@ def set_launch_error(msg: str | None) -> None:
     _launch_error[0] = msg
 
 
+def _port_is_bindable(port: int, host: str = "127.0.0.1") -> bool:
+    """True if we can bind host:port right now.
+
+    Uses a real bind() so it catches BOTH 'address in use' (WinError 10048)
+    AND Windows 'access forbidden' (WinError 10013) — the latter happens when
+    another process (e.g. an svchost service) holds the port with
+    SO_EXCLUSIVEADDRUSE, which a connect-based probe would miss. We do NOT set
+    SO_REUSEADDR (it yields false positives on Windows).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def _find_free_port(host: str = "127.0.0.1") -> int:
+    """Ask the OS for a free ephemeral port (bind to port 0). The OS never
+    hands out a reserved/excluded port, so this can't reproduce the 10013 case."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
 def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
                    custom_url: str | None = None) -> tuple[subprocess.Popen, str]:
     """Launch ComfyUI in the background via comfy-cli and wait until it's ready.
 
     Returns (process, url).
     """
-    url = custom_url or f"http://127.0.0.1:{port}"
+    if custom_url:
+        url = custom_url
+    else:
+        if not _port_is_bindable(port):
+            new_port = _find_free_port()
+            log.warning(
+                "Port %d is not bindable (in use or held by another process, e.g. svchost); "
+                "launching ComfyUI on free port %d instead", port, new_port)
+            port = new_port
+        url = f"http://127.0.0.1:{port}"
     set_launch_error(None)  # optimistic: new attempt clears any prior failure
 
     log.info("Launching ComfyUI via comfy-cli: port=%d", port)
