@@ -41,6 +41,12 @@ def _comfy_env() -> dict[str, str]:
     env = os.environ.copy()
     env.pop("VIRTUAL_ENV", None)
     env.pop("CONDA_PREFIX", None)
+    # Force the child Python (comfy-cli) to use UTF-8 for its own stdout/stderr.
+    # Otherwise it inherits Windows' legacy cp1252 codec and crashes with a
+    # UnicodeEncodeError the moment it prints a non-Latin-1 char (e.g. the "→"
+    # in comfy-cli's "Detected CUDA driver version: X → using Y" message).
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 
