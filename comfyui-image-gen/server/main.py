@@ -93,10 +93,8 @@ _armed: list[bool] = [False]  # set True on the first /alive ping
 # prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
 MANAGED_GRACE_SECONDS = 180
 
-# Self-restart state (Settings → Save → Restart). _restarting tells the post-window cleanup to
-# leave ComfyUI running so the replacement re-attaches in ~1s instead of bouncing it. _START_CWD
-# preserves the cwd for the `-m server.main` launch form (run_http.py is cwd-independent).
-_restarting: list[bool] = [False]
+# Self-restart state (Settings → Save → Restart). _START_CWD preserves the cwd for the
+# `-m server.main` launch form (run_http.py is cwd-independent).
 _START_CWD = os.getcwd()
 
 # Active pack per tool_name — looked up dynamically by handlers.
@@ -746,10 +744,9 @@ def restart_server() -> None:
 
     Spawns a faithful copy of how we were started (sys.orig_argv reproduces the `-m server.main`
     or run_http.py form) detached, with COMFY_RESTART=1 so the replacement waits for us to free
-    the port before binding. Sets _restarting so the post-window cleanup leaves ComfyUI running.
-    Works the same in standalone and managed mode — the shim isn't involved.
+    the port before binding. ComfyUI is stopped during the post-window cleanup so the replacement
+    starts it fresh. Works the same in standalone and managed mode — the shim isn't involved.
     """
-    _restarting[0] = True
     orig = list(getattr(sys, "orig_argv", []) or [])
     cmd = [sys.executable] + orig[1:] if len(orig) > 1 else [sys.executable, "-m", "server.main", "--http"]
 
@@ -768,7 +765,6 @@ def restart_server() -> None:
     try:
         subprocess.Popen(cmd, **kwargs)
     except Exception as e:
-        _restarting[0] = False
         log.error("Failed to spawn replacement server: %s", e)
         raise
 
@@ -846,19 +842,26 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     def _managed() -> bool:
         return _armed[0]
 
+    # The window's status poller needs the live ComfyUI URL — which may be a fallback port if 8188
+    # was unavailable — so read the global at call time rather than capturing its initial value.
+    def _comfyui_url() -> str:
+        return comfyui_url
+
     if full_url:
         show_url_window(full_url, on_ready=_store_window, stale_check=_stale, managed_check=_managed,
-                        restart_cb=restart_server)
+                        restart_cb=restart_server, comfyui_url_getter=_comfyui_url)
     else:
         show_server_running_window(args.port, mcp_path, on_ready=_store_window, stale_check=_stale,
-                                   managed_check=_managed, restart_cb=restart_server)
+                                   managed_check=_managed, restart_cb=restart_server,
+                                   comfyui_url_getter=_comfyui_url)
 
     # Window closed → cleanup → exit
     log.info("Window closed, shutting down...")
     if tunnel_proc:
         tunnel_proc.kill()
-    # On a self-restart, leave ComfyUI running so the replacement re-attaches instantly.
-    if comfy_cli_path and not _restarting[0]:
+    # Always stop ComfyUI on shutdown, including self-restart, so the replacement comes up clean and
+    # re-launches it. (A fallback-port instance can't be re-attached anyway: re-attach probes :8188.)
+    if comfy_cli_path:
         stop_comfyui(comfy_cli_path, comfyui_process)
 
 

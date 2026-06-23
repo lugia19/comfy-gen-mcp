@@ -1102,13 +1102,15 @@ class ServerWindow(QMainWindow):
     download_requested = pyqtSignal(str, object, str)  # models_dir, models (list[dict]), title
 
     def __init__(self, title: str, url: str | None = None, port: int | None = None, mcp_path: str | None = None,
-                 stale_check=None, managed_check=None, restart_cb=None):
+                 stale_check=None, managed_check=None, restart_cb=None, comfyui_url_getter=None):
         super().__init__()
         self.setWindowTitle("Comfy-Gen-MCP — Server")
         self.setMinimumWidth(520)
         self._stale_check = stale_check
         self._managed_check = managed_check
         self._restart_cb = restart_cb
+        # Returns the live ComfyUI URL (which may use a fallback port, not the default 8188).
+        self._comfyui_url_getter = comfyui_url_getter
         self._managed_applied: bool | None = None  # last managed state pushed to the UI
 
         # Cross-thread download support
@@ -1315,7 +1317,9 @@ class ServerWindow(QMainWindow):
         from server.config import COMFYUI_DEFAULT_URL
         while not self._comfyui_poll_stop.is_set():
             try:
-                if _check_url(COMFYUI_DEFAULT_URL):
+                # Use the live URL (may be a fallback port if 8188 was unavailable), not the default.
+                url = (self._comfyui_url_getter() if self._comfyui_url_getter else None) or COMFYUI_DEFAULT_URL
+                if _check_url(url):
                     set_launch_error(None)  # healthy now — clear any stale failure
                     self._comfyui_state = ("ready", "")
                 elif get_launch_error():
@@ -1460,7 +1464,7 @@ class ServerWindow(QMainWindow):
 
 
 def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, managed_check=None,
-                        restart_cb=None):
+                        restart_cb=None, comfyui_url_getter=None):
     """Show a ServerWindow with tray icon and run the Qt event loop until Quit.
 
     on_ready: optional callback receiving the ServerWindow before the event loop starts.
@@ -1471,7 +1475,8 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, ma
     app = _get_app()
     app.setQuitOnLastWindowClosed(False)  # tray icon keeps app alive
     window = ServerWindow(title="MCP Server Running", stale_check=stale_check,
-                          managed_check=managed_check, restart_cb=restart_cb, **window_kwargs)
+                          managed_check=managed_check, restart_cb=restart_cb,
+                          comfyui_url_getter=comfyui_url_getter, **window_kwargs)
     window.show()
     if on_ready:
         on_ready(window)
@@ -1479,17 +1484,20 @@ def _show_server_window(window_kwargs: dict, on_ready=None, stale_check=None, ma
     app.exec()
 
 
-def show_url_window(url: str, on_ready=None, stale_check=None, managed_check=None, restart_cb=None):
+def show_url_window(url: str, on_ready=None, stale_check=None, managed_check=None, restart_cb=None,
+                    comfyui_url_getter=None):
     """Show the tunnel URL window with tray icon. Blocks until Quit."""
     _show_server_window({"url": url}, on_ready=on_ready, stale_check=stale_check,
-                        managed_check=managed_check, restart_cb=restart_cb)
+                        managed_check=managed_check, restart_cb=restart_cb,
+                        comfyui_url_getter=comfyui_url_getter)
 
 
 def show_server_running_window(port: int, mcp_path: str, on_ready=None, stale_check=None,
-                               managed_check=None, restart_cb=None):
+                               managed_check=None, restart_cb=None, comfyui_url_getter=None):
     """Show the minimal local server-running window with tray icon. Blocks until Quit."""
     _show_server_window({"port": port, "mcp_path": mcp_path}, on_ready=on_ready,
-                        stale_check=stale_check, managed_check=managed_check, restart_cb=restart_cb)
+                        stale_check=stale_check, managed_check=managed_check, restart_cb=restart_cb,
+                        comfyui_url_getter=comfyui_url_getter)
 
 
 def run_with_progress(label: str, task_fn) -> object:
