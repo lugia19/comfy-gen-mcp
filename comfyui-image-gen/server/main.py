@@ -806,6 +806,14 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
 def main():
     args = _parse_args()
 
+    # The bootstrapper chain (Go launcher -> install.py -> run_http.py) doesn't forward CLI
+    # args, so the shim passes the managed-by PID via the COMFY_MANAGED_BY env var instead.
+    # Honor it when --managed-by wasn't given on the command line.
+    if args.managed_by is None:
+        env_pid = os.environ.get("COMFY_MANAGED_BY", "").strip()
+        if env_pid.isdigit():
+            args.managed_by = int(env_pid)
+
     # DXT/stdio entry: run the thin shim, which starts the real HTTP server (if needed)
     # and proxies MCP calls to it. All real logic lives in the HTTP server below.
     if not is_http_mode():

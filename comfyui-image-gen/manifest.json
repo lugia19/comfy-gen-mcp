@@ -2,7 +2,7 @@
   "dxt_version": "0.4",
   "name": "comfyui-image-gen",
   "display_name": "Comfy-Gen-MCP",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Generate images using AI models via ComfyUI (auto-installed via comfy-cli). Automatically handles model and node setup.",
   "author": {
     "name": "lugia19"

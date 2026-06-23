@@ -11,6 +11,7 @@ spawning can be disabled with SHIM_NO_SPAWN=1 (point it at a server you started 
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -23,7 +24,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from server.config import load_local_config, save_local_config
+from server.config import LOCAL_CONFIG_PATH, load_local_config, save_local_config
 from server.tool_specs import build_tool_specs
 
 log = logging.getLogger("comfy-mcp.shim")
@@ -87,22 +88,92 @@ async def _is_alive(alive_url: str) -> bool:
 
 _spawn_attempted = False
 
+# ── Self-updating runtime (bootstrapper) ──────────────────────────────
+# The packaged mcpb ships a Go bootstrapper dist under <bundle>/bootstrap/. Instead of
+# running this frozen bundled copy of the server, the shim launches that bootstrapper, which
+# git-pulls the latest server code into a stable runtime dir and runs it. So bug fixes that
+# land in server code reach users WITHOUT reinstalling the extension. Only the shim itself,
+# the tool list (tool_specs + packs), and the bootstrapper dist stay frozen until a reinstall.
+_BOOTSTRAP_EXE = "comfyui-image-gen-mcp.exe"
+_BUNDLED_BOOTSTRAP_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bootstrap"
+)
+# Stable, space-free, survives extension updates/uninstalls (unlike the extension dir).
+_RUNTIME_DIR = os.path.join(os.path.expanduser("~"), ".comfy-gen-mcp", "runtime")
+_WIN_DETACHED = 0x00000008  # DETACHED_PROCESS
+
+
+def _bootstrap_available() -> bool:
+    """True when this mcpb ships the bootstrapper dist (the normal packaged case). False when
+    running from a source checkout, on non-Windows, or when SHIM_NO_BOOTSTRAP forces direct
+    spawn — all of which fall back to running this checkout's server in place."""
+    return (
+        sys.platform == "win32"
+        and not os.environ.get("SHIM_NO_BOOTSTRAP")
+        and os.path.isfile(os.path.join(_BUNDLED_BOOTSTRAP_DIR, _BOOTSTRAP_EXE))
+    )
+
+
+def _sync_bootstrap_dist() -> str:
+    """Copy the bundled bootstrapper dist into the stable runtime dir, refreshing only files
+    that changed (so a newer mcpb updates the dist) and skipping any that are locked — e.g.
+    the .exe of an instance that's still running, whose existing copy is what we'd use anyway.
+    Returns the runtime exe path."""
+    os.makedirs(_RUNTIME_DIR, exist_ok=True)
+    for name in os.listdir(_BUNDLED_BOOTSTRAP_DIR):
+        src = os.path.join(_BUNDLED_BOOTSTRAP_DIR, name)
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(_RUNTIME_DIR, name)
+        try:
+            if os.path.isfile(dst):
+                s, d = os.stat(src), os.stat(dst)
+                if s.st_size == d.st_size and abs(s.st_mtime - d.st_mtime) < 2:
+                    continue  # unchanged (copy2 preserves mtime) — leave it
+            shutil.copy2(src, dst)  # copy2 preserves mtime for the comparison above
+        except OSError as e:
+            log.warning("Could not refresh bootstrap file %s: %s", name, e)
+    return os.path.join(_RUNTIME_DIR, _BOOTSTRAP_EXE)
+
+
+def _popen_detached(args: list[str], cwd: str, env: dict) -> None:
+    kwargs = {"cwd": cwd, "env": env,
+              "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | _WIN_DETACHED
+    subprocess.Popen(args, **kwargs)
+
 
 def _spawn_server() -> None:
-    """Spawn the real HTTP server detached, marked as managed by this shim."""
+    """Spawn the real HTTP server detached, marked as managed by this shim.
+
+    Normally this launches the bundled bootstrapper (self-updating runtime); from a source
+    checkout it falls back to running this checkout's server directly. Either way the server
+    learns it's shim-managed via COMFY_MANAGED_BY, and is pointed at the shim's config file via
+    COMFY_CONFIG_PATH (the bootstrapper chain doesn't forward CLI args, so both go through env)."""
     global _spawn_attempted
     if _spawn_attempted or os.environ.get("SHIM_NO_SPAWN"):
         return
     _spawn_attempted = True
 
+    env = os.environ.copy()
+    env["COMFY_MANAGED_BY"] = str(os.getpid())
+    env["COMFY_CONFIG_PATH"] = LOCAL_CONFIG_PATH
+
+    if _bootstrap_available():
+        try:
+            exe = _sync_bootstrap_dist()
+            log.info("Spawning self-updating runtime via bootstrapper: %s (cwd=%s)", exe, _RUNTIME_DIR)
+            _popen_detached([exe], _RUNTIME_DIR, env)
+            return
+        except Exception as e:
+            log.error("Bootstrapper spawn failed (%s); falling back to direct spawn", e)
+
     cwd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     args = [sys.executable, "-m", "server.main", "--http", "--managed-by", str(os.getpid())]
-    log.info("Spawning HTTP server: %s (cwd=%s)", args, cwd)
-    kwargs = {"cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
+    log.info("Spawning HTTP server directly: %s (cwd=%s)", args, cwd)
     try:
-        subprocess.Popen(args, **kwargs)
+        _popen_detached(args, cwd, env)
     except Exception as e:
         log.error("Failed to spawn HTTP server: %s", e)
 
