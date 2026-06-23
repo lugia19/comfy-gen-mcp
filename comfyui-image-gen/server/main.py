@@ -16,6 +16,8 @@ import sys
 import threading
 import time
 
+import psutil
+
 _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
@@ -92,6 +94,36 @@ _armed: list[bool] = [False]  # set True on the first /alive ping
 # 3 minutes: long enough that a stalled shim (e.g. the user sitting on a tool-permission
 # prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
 MANAGED_GRACE_SECONDS = 180
+# Once pings lapse past this AND Claude Desktop is gone, shut down without waiting out the full
+# grace. This is below the shim's 15s keepalive interval, so the process check runs ~once per ping
+# cycle in normal operation — that's fine: the check is what prevents a premature exit, not the
+# threshold (an app-open server always sees claude.exe and stays up).
+MANAGED_FAST_GRACE_SECONDS = 10
+
+
+def _claude_desktop_running() -> bool:
+    """True if a Claude Desktop process (claude.exe, path without 'claude-code') is running.
+
+    Used only to accelerate managed shutdown — biased toward True so we never exit early on
+    uncertainty (worst case: fall back to the full grace). Windows-only; elsewhere returns True so
+    the fast path is disabled and the 180s grace governs unchanged."""
+    if sys.platform != "win32":
+        return True
+    try:
+        for p in psutil.process_iter(["name", "exe"]):
+            try:
+                if (p.info["name"] or "").lower() != "claude.exe":
+                    continue
+                exe = (p.info["exe"] or "").lower()
+                if "claude-code" in exe:
+                    continue  # Claude Code CLI, not the desktop app
+                return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue  # can't inspect — skip; another match may still confirm
+        return False
+    except Exception as e:
+        log.warning("Claude Desktop process check failed (%s); assuming running", e)
+        return True
 
 # Self-restart state (Settings → Save → Restart). _START_CWD preserves the cwd for the
 # `-m server.main` launch form (run_http.py is cwd-independent).
@@ -832,8 +864,16 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     def _stale() -> bool:
         if not _armed[0]:
             return False
-        if time.monotonic() - _keepalive_ts[0] > MANAGED_GRACE_SECONDS:
+        idle = time.monotonic() - _keepalive_ts[0]
+        # Hard cap: covers a stalled-but-alive shim (permission prompt) or the MCP disabled with the
+        # app still open — both keep claude.exe running, so only time decides here.
+        if idle > MANAGED_GRACE_SECONDS:
             log.info("Shim keepalive stale (>%ds) — shutting down", MANAGED_GRACE_SECONDS)
+            return True
+        # Fast path: pings lapsed AND Claude Desktop is gone (app closed) — don't wait the full grace.
+        if idle > MANAGED_FAST_GRACE_SECONDS and not _claude_desktop_running():
+            log.info("Claude Desktop gone and pings lapsed (>%ds) — shutting down",
+                     MANAGED_FAST_GRACE_SECONDS)
             return True
         return False
 
