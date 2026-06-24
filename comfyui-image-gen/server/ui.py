@@ -209,7 +209,24 @@ def _apply_dark_theme(app: QApplication):
     app.setPalette(palette)
 
 
-class _RefreshingComboBox(QComboBox):
+class _NoWheelMixin:
+    """Make a widget ignore mouse-wheel events, so scrolling the Settings page can't
+    accidentally change a spin box or combo value. The ignored event bubbles up to the
+    enclosing scroll area, which then scrolls as the user expects."""
+
+    def wheelEvent(self, event):  # noqa: N802 — Qt camelCase override
+        event.ignore()
+
+
+class _NoWheelSpinBox(_NoWheelMixin, QSpinBox):
+    pass
+
+
+class _NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
+    pass
+
+
+class _RefreshingComboBox(_NoWheelMixin, QComboBox):
     """Editable combo whose item list is re-fetched each time the popup opens.
 
     Lets the LoRA dropdown pick up newly-dropped-in files without reopening Settings.
@@ -251,7 +268,10 @@ def _fit_scroll_to_content(scroll: QScrollArea, inner: QWidget, extra: int = 8) 
     inner.adjustSize()
     vbar = scroll.verticalScrollBar().sizeHint().width()
     frame = 2 * scroll.frameWidth()
-    scroll.setMinimumWidth(inner.sizeHint().width() + vbar + frame + extra)
+    # The content's sizeHint tends to run a touch tight (some combos size to contents only on
+    # first show), so pad the content width by 5% for breathing room before adding chrome.
+    content = round(inner.sizeHint().width() * 1.05)
+    scroll.setMinimumWidth(content + vbar + frame + extra)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
 
@@ -515,7 +535,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             row.addWidget(browse)
             layout.addLayout(row)
         elif ftype == "int":
-            w = QSpinBox()
+            w = _NoWheelSpinBox()
             w.setRange(field.get("min", 0), field.get("max", 1_000_000))
             try:
                 w.setValue(int(cur))
@@ -603,7 +623,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 combo.setCurrentIndex(0)
             else:
                 combo.setCurrentText("")
-            spin = QDoubleSpinBox()
+            spin = _NoWheelDoubleSpinBox()
             spin.setRange(-5.0, 5.0)
             spin.setSingleStep(0.1)
             spin.setValue(float(strength))
