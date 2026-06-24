@@ -103,9 +103,11 @@ def _env(key: str) -> str | None:
 def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_reader=None) -> str:
     """Final tool description for a resolved pack.
 
-    Single implementation of the two description rules, shared by the server and the shim:
+    Single implementation of the description rules, shared by the server and the shim:
       1. For a multi-pack tool group, use ``group_tool_description``.
       2. Substitute ``{artist_list}`` from ANIMA_ARTISTS env → pack_settings → default.
+      3. Substitute ``{lora_triggers}`` with the configured trigger-gated LoRA words
+         (pack_loras), or nothing when none are configured.
     """
     desc = pack["tool_description"]
     tool_name = pack["tool_name"]
@@ -127,6 +129,23 @@ def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_read
         else:
             artist_display = artists_str
         desc = desc.replace("{artist_list}", artist_display)
+
+    if "{lora_triggers}" in desc:
+        loras = load_local_config().get("pack_loras", {}).get(pack["name"], [])
+        triggers: list[str] = []
+        for e in loras:
+            trig = (e.get("trigger") or "").strip() if isinstance(e, dict) else ""
+            if trig and trig not in triggers:  # dedupe, preserve order; skip always-on LoRAs
+                triggers.append(trig)
+        if triggers:
+            lora_text = (
+                "\n\nThe following trigger words will cause a LoRA to be applied to the prompt "
+                "(these can be either artist styles, usually prefixed with @, or concept tags). "
+                "These triggers must be used verbatim: " + ", ".join(triggers) + "."
+            )
+        else:
+            lora_text = ""
+        desc = desc.replace("{lora_triggers}", lora_text)
 
     return desc
 
