@@ -1133,15 +1133,19 @@ class ServerWindow(QMainWindow):
         layout.addWidget(self._url_entry)
 
         # Local (non-tunnel) mode: Claude Desktop reaches this server internally, so the
-        # localhost URL is only useful for reaching it from elsewhere.
+        # localhost URL is only useful for reaching it from elsewhere. Only meaningful while
+        # the shim is managing us — a standalone (non-managed) local server actually does need
+        # this URL, so the note stays hidden there and _apply_managed_ui toggles it by state.
+        self._managed_note = None
         if url is None:
-            managed_note = QLabel(
+            self._managed_note = QLabel(
                 "You don't need this URL for Claude Desktop — it's already set up to work. "
                 "It's only needed if you want to reach this server from another machine."
             )
-            managed_note.setStyleSheet("color: gray;")
-            managed_note.setWordWrap(True)
-            layout.addWidget(managed_note)
+            self._managed_note.setStyleSheet("color: gray;")
+            self._managed_note.setWordWrap(True)
+            self._managed_note.setVisible(False)
+            layout.addWidget(self._managed_note)
 
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: #2a82da;")
@@ -1339,6 +1343,9 @@ class ServerWindow(QMainWindow):
         self._managed_applied = managed
         self._quit_btn.setVisible(not managed)
         self._quit_action.setVisible(not managed)
+        # The "you don't need this URL for Claude Desktop" note only applies when managed.
+        if self._managed_note is not None:
+            self._managed_note.setVisible(managed)
         if managed:
             self._footer.setText("Closing this window hides it to the system tray. "
                                  "The server stops automatically when Claude Desktop closes.")
