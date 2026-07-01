@@ -275,15 +275,30 @@ if ($buildMac) {
         $zipName = "$APP_NAME-$VERSION-macos-universal.zip"
         $zipPath = Join-Path $builds $zipName
         if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-        $buildsWsl = (& wsl wslpath -a ($builds -replace '\\','/')) 2>$null
-        if (-not $buildsWsl) {
-            # Fallback conversion C:\foo -> /mnt/c/foo
-            $p = (Resolve-Path $builds).Path -replace '\\','/'
-            if ($p -match '^([A-Za-z]):(.*)') { $buildsWsl = "/mnt/$($matches[1].ToLower())$($matches[2])" }
+
+        # wsl may print benign warnings to stderr (e.g. "Nested virtualization is not
+        # supported on this machine"), which it does even though wslpath/zip still work.
+        # Under EAP=Stop, any native-command stderr is promoted to a *terminating* error
+        # (and 2>$null doesn't reliably suppress it in Windows PowerShell 5.1), so relax
+        # EAP locally and judge success by the zip's exit code instead.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $zipOk = $false
+        try {
+            $buildsWsl = (& wsl wslpath -a ($builds -replace '\\','/')) 2>$null
+            if (-not $buildsWsl) {
+                # Fallback conversion C:\foo -> /mnt/c/foo
+                $p = (Resolve-Path $builds).Path -replace '\\','/'
+                if ($p -match '^([A-Za-z]):(.*)') { $buildsWsl = "/mnt/$($matches[1].ToLower())$($matches[2])" }
+            }
+            $buildsWsl = $buildsWsl.Trim()
+            & wsl sh -c "cd '$buildsWsl' && chmod +x '$APP_NAME.app/Contents/MacOS/$APP_NAME' && chmod +x '$APP_NAME.app/Contents/Resources/uv' && rm -f '$zipName' && zip -r -y '$zipName' '$APP_NAME.app'" 2>$null
+            $zipOk = ($LASTEXITCODE -eq 0)
+        } finally {
+            $ErrorActionPreference = $prevEAP
+            $global:LASTEXITCODE = 0   # don't let a stray wsl exit code fail the parent build
         }
-        $buildsWsl = $buildsWsl.Trim()
-        & wsl sh -c "cd '$buildsWsl' && chmod +x '$APP_NAME.app/Contents/MacOS/$APP_NAME' && chmod +x '$APP_NAME.app/Contents/Resources/uv' && rm -f '$zipName' && zip -r -y '$zipName' '$APP_NAME.app'"
-        if ($LASTEXITCODE -eq 0) {
+        if ($zipOk) {
             Write-Host "Created: $zipPath" -ForegroundColor Green
         } else {
             Write-Host "Warning: WSL zip failed; the unzipped .app remains at $appBundle" -ForegroundColor Yellow
