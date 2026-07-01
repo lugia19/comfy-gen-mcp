@@ -83,6 +83,7 @@ models_dir: str | None = None
 # Per-pack download state: pack_name → True if download in progress
 _downloading: dict[str, bool] = {}
 _server_window = None  # set in HTTP mode for cross-thread download UI
+_runtime_lock = None  # single-instance file lock handle; held for the process lifetime
 
 # Managed-lifecycle state — "pings arm it". Only the stdio shim ever hits GET /alive, so being
 # pinged IS the signal that this server is shim-managed: the first ping ARMS it, and once armed
@@ -916,6 +917,19 @@ def main():
         return
 
     # ── HTTP server: the one real runtime ─────────────────────────────
+    # Single-instance guard: only one runtime may own the port. A duplicate (Claude Desktop
+    # spawned the shim twice, or two shims raced a cold start) exits here — before any Qt/tray —
+    # so the user never sees a second window. On a self-restart the outgoing instance still holds
+    # the lock while it shuts ComfyUI down, so the replacement WAITS for it rather than exiting.
+    from server.singleton import acquire_runtime_lock
+    global _runtime_lock
+    restart = bool(os.environ.get("COMFY_RESTART"))
+    _runtime_lock = acquire_runtime_lock(args.port, wait_timeout=30.0 if restart else 0.0)
+    if _runtime_lock is None:
+        log.info("Another runtime already holds the single-instance lock on port %d; exiting.",
+                 args.port)
+        return
+
     _seed_env_from_config()
     packs, _groups, custom_pack, custom_workflow_error = startup()
     mcp, mcp_path = _build_http_app(args)
