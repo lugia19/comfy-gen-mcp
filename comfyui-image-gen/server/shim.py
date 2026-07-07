@@ -153,10 +153,11 @@ def _spawn_server() -> None:
 
     Normally this launches the bundled bootstrapper (self-updating runtime); from a source
     checkout it falls back to running this checkout's server directly. The server is pointed at
-    the shim's config file via COMFY_CONFIG_PATH so they agree on the mcp_path token (the
-    bootstrapper chain doesn't forward CLI args, so it goes through env). No managed flag is
-    passed: the shim's /alive keepalive pings (see _warm_and_keepalive) arm the server's
-    self-shutdown on their own."""
+    the shim's config file via COMFY_CONFIG_PATH so they agree on the mcp_path token, and tagged
+    with COMFY_MANAGED so it knows it was spawned by us and may self-shut-down when our keepalive
+    pings lapse (see _warm_and_keepalive). Both cross the bootstrapper via env, since the chain
+    doesn't forward CLI args. A runtime the user started manually carries neither flag, so it is
+    never armed and stays up even while we ping it."""
     global _spawn_attempted
     if _spawn_attempted or os.environ.get("SHIM_NO_SPAWN"):
         return
@@ -164,6 +165,7 @@ def _spawn_server() -> None:
 
     env = os.environ.copy()
     env["COMFY_CONFIG_PATH"] = LOCAL_CONFIG_PATH
+    env["COMFY_MANAGED"] = "1"  # only runtimes the shim spawns self-shut-down when pings lapse
 
     if _bootstrap_available():
         try:

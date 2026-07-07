@@ -85,13 +85,14 @@ _downloading: dict[str, bool] = {}
 _server_window = None  # set in HTTP mode for cross-thread download UI
 _runtime_lock = None  # single-instance file lock handle; held for the process lifetime
 
-# Managed-lifecycle state — "pings arm it". Only the stdio shim ever hits GET /alive, so being
-# pinged IS the signal that this server is shim-managed: the first ping ARMS it, and once armed
-# it self-shuts-down when the pings go stale (shim died/crashed/wedged). A server nobody pings —
-# the standalone HTTP instance the user runs directly — is never armed and stays up. No flag
-# crosses the bootstrapper; the ping we already send does the whole job.
+# Managed-lifecycle state — the shim arms us via COMFY_MANAGED. When the shim spawns the runtime
+# it tags the env with COMFY_MANAGED=1 (crosses the bootstrapper, which forwards env but not CLI
+# args); we read that once at startup into _armed. An armed runtime self-shuts-down when the shim's
+# keepalive pings go stale (shim died/crashed/wedged). A runtime the user started manually carries
+# no such flag, so it is never armed — even if the shim later connects to it and pings it, it keeps
+# it warm but never triggers self-shutdown, so it stays up until the user quits from the tray.
 _keepalive_ts: list[float] = [0.0]
-_armed: list[bool] = [False]  # set True on the first /alive ping
+_armed: list[bool] = [False]  # set at startup from COMFY_MANAGED (see main())
 # 3 minutes: long enough that a stalled shim (e.g. the user sitting on a tool-permission
 # prompt, which pauses the keepalive pings) doesn't trip a premature self-shutdown.
 MANAGED_GRACE_SECONDS = 180
@@ -758,15 +759,15 @@ def _build_http_app(args) -> tuple[FastMCP, str]:
     )
     log.info("HTTP mode: port=%d, path=%s", args.port, mcp_path)
 
-    # Liveness + keepalive endpoint. The shim polls this to know the server is up, and pings it
-    # to keep the server alive. The first hit arms the managed-shutdown timer (see _armed).
+    # Liveness + keepalive endpoint. The shim polls this to know the server is up, and pings it to
+    # keep it alive. Each hit refreshes the keepalive timestamp; arming is decided at startup from
+    # COMFY_MANAGED (see _armed / main()), so a ping keeps a manual runtime warm but never arms it.
     _keepalive_ts[0] = time.monotonic()
 
     @mcp.custom_route("/alive", methods=["GET"])
     async def _alive(request):
         from starlette.responses import PlainTextResponse
         _keepalive_ts[0] = time.monotonic()
-        _armed[0] = True
         return PlainTextResponse("ok")
 
     return mcp, mcp_path
@@ -860,8 +861,8 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
         global _server_window
         _server_window = w
 
-    # Once armed (the shim has pinged at least once), the window self-closes when the pings go
-    # stale — the shim (Claude Desktop) is gone. A never-pinged standalone server never arms.
+    # Once armed (the shim spawned us — COMFY_MANAGED), the window self-closes when the pings go
+    # stale — the shim (Claude Desktop) is gone. A manually-started server is never armed and stays up.
     def _stale() -> bool:
         if not _armed[0]:
             return False
@@ -878,8 +879,8 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
             return True
         return False
 
-    # Managed mode for the UI = "the shim is pinging us" = armed. Reuse pings-arm-it as the
-    # signal so the window can hide Quit/Uninstall and reword its footer (no separate flag).
+    # Managed mode for the UI = "the shim spawned us" = armed (COMFY_MANAGED). The window hides
+    # Quit/Uninstall and rewords its footer; a manually-started server is unmanaged and keeps them.
     def _managed() -> bool:
         return _armed[0]
 
@@ -929,6 +930,10 @@ def main():
         log.info("Another runtime already holds the single-instance lock on port %d; exiting.",
                  args.port)
         return
+
+    # Arm managed-shutdown iff the shim spawned us (COMFY_MANAGED). A self-restart inherits the
+    # flag through env, so a managed runtime's replacement stays managed and a manual one stays manual.
+    _armed[0] = bool(os.environ.get("COMFY_MANAGED"))
 
     _seed_env_from_config()
     packs, _groups, custom_pack, custom_workflow_error = startup()
