@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-EXTENSION_VERSION = "1.0.4"
+EXTENSION_VERSION = "1.0.5"
 COMFYUI_DEFAULT_URL = "http://127.0.0.1:8188"
 COMFYUI_DEFAULT_PORT = 8188
 

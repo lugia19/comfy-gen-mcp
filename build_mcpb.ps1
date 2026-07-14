@@ -87,7 +87,11 @@ try {
 # 4. Pack the mcpb (version comes from comfyui-image-gen\manifest.json).
 Write-Host "=== Packing mcpb ===" -ForegroundColor Cyan
 $mcpbSrc = Join-Path $PSScriptRoot "comfyui-image-gen"
-$mcpbOut = Join-Path $dist "comfyui-image-gen.mcpb"
+# Version the mcpb filename to match the standalone zips (single source of truth:
+# comfyui-image-gen\manifest.json). Claude Desktop identifies the extension by the
+# manifest "name", not the filename, so the version suffix is purely cosmetic/for releases.
+$mcpbVersion = (Get-Content (Join-Path $mcpbSrc "manifest.json") -Raw | ConvertFrom-Json).version
+$mcpbOut = Join-Path $dist "Comfy-Gen-MCP-$mcpbVersion.mcpb"
 npx @anthropic-ai/mcpb pack $mcpbSrc $mcpbOut
 if ($LASTEXITCODE -ne 0) { throw "mcpb pack failed" }
 

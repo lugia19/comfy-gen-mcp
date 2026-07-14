@@ -26,7 +26,7 @@ $ErrorActionPreference = "Stop"
 # labels the standalone artifacts; the mcpb's version comes from the manifest).
 $APP_NAME  = "Comfy-Gen-MCP"
 $BUNDLE_ID = "com.lugia19.comfy-gen-mcp"
-$VERSION   = "2.0.0"
+$VERSION   = "2.0.1"
 
 # Pin uv if you want reproducible builds; "latest" tracks the newest release.
 $UV_VERSION = "latest"
