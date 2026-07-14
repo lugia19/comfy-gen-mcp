@@ -65,6 +65,13 @@ func uvBinaryName() string {
 	return "uv"
 }
 
+// venvPython returns the path to a venv's Python interpreter, used to verify the
+// venv is fully created (an interrupted `uv venv` can leave the folder present
+// but empty). uv places the interpreter at bin/python off Windows.
+func venvPython(venvFolder string) string {
+	return filepath.Join(venvFolder, "bin", "python")
+}
+
 // hideWindow is a no-op off Windows (there is no console window to hide, and
 // syscall.SysProcAttr has no HideWindow field on these platforms).
 func hideWindow(cmd *exec.Cmd) {}

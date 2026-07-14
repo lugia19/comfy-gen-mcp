@@ -44,6 +44,13 @@ func uvBinaryName() string {
 	return "uv.exe"
 }
 
+// venvPython returns the path to a venv's Python interpreter, used to verify the
+// venv is fully created (an interrupted `uv venv` can leave the folder present
+// but empty). uv places the interpreter at Scripts\python.exe on Windows.
+func venvPython(venvFolder string) string {
+	return filepath.Join(venvFolder, "Scripts", "python.exe")
+}
+
 func hideWindow(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 }

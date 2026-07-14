@@ -164,14 +164,23 @@ func main() {
 	}
 
 	freshVenv := false
-	_, err = os.Stat(config.VenvFolder)
-	if os.IsNotExist(err) {
+	// A venv is only usable if its interpreter is present. An interrupted first
+	// install can kill `uv venv` (or the base-requirements step right after)
+	// partway, leaving the venv *folder* behind with no Python inside — which the
+	// old folder-exists check treated as "already set up", bricking every later
+	// launch (uv reports "No virtual environment ... for directory venv" forever,
+	// and install.py crashes importing base packages that never got installed).
+	// Validate by the interpreter, and clear any partial folder so recreation can
+	// succeed on this same launch and self-heal.
+	if _, statErr := os.Stat(venvPython(config.VenvFolder)); statErr != nil {
 		freshVenv = true
+		if _, dirErr := os.Stat(config.VenvFolder); dirErr == nil {
+			fmt.Println("Venv folder exists but has no interpreter; recreating...")
+			_ = os.RemoveAll(config.VenvFolder)
+		}
 		fmt.Println("Creating venv with uv (python " + pythonVersion + ")...")
 		err = runUV(f, "venv", config.VenvFolder, "--python", pythonVersion)
 		checkError("Failed to create venv with uv, see python_crash.log", err)
-	} else if err != nil {
-		checkError("Error checking venv directory", err)
 	} else {
 		fmt.Println("Venv directory already exists, skipping venv creation")
 	}
