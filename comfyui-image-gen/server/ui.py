@@ -474,6 +474,8 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
     from server.settings import SETTINGS_SCHEMA
     cfg = load_local_config()
     anima_pack = next((p for p in packs if p.get("default_artist_list")), None)
+    # Anima-family packs (classic + Turbo) share one artist/LoRA config bucket via config_key.
+    anima_key = anima_pack.get("config_key", anima_pack["name"]) if anima_pack else "anima"
 
     # ── Model packs: one radio group per multi-pack tool ──
     radio_groups: list[tuple[str, list[tuple[dict, QRadioButton]]]] = []
@@ -568,7 +570,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         )
         layout.addWidget(browse_styles)
         artist_entry = QLineEdit()
-        cur_art = (cfg.get("pack_settings", {}).get("anima", {}).get("artist_list")
+        cur_art = (cfg.get("pack_settings", {}).get(anima_key, {}).get("artist_list")
                    or anima_pack["default_artist_list"])
         artist_entry.setText(cur_art)
         layout.addWidget(artist_entry)
@@ -653,7 +655,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                     lambda *_: None if touched["v"] else trigger_edit.setText(stem())
                 )
 
-        for e in cfg.get("pack_loras", {}).get("anima", []):
+        for e in cfg.get("pack_loras", {}).get(anima_key, []):
             if isinstance(e, str):
                 e = {"name": e}
             add_lora_row(e.get("name", ""), e.get("strength", 1.0), e.get("trigger", ""))
@@ -692,7 +694,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         if artist_entry is not None:
             val = artist_entry.text().strip()
             if val:
-                c.setdefault("pack_settings", {}).setdefault("anima", {})["artist_list"] = val
+                c.setdefault("pack_settings", {}).setdefault(anima_key, {})["artist_list"] = val
         if anima_pack:
             loras = []
             for combo, spin, trigger_edit, _row in lora_rows:
@@ -703,7 +705,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                     if trigger:
                         entry["trigger"] = trigger
                     loras.append(entry)
-            c.setdefault("pack_loras", {})["anima"] = loras
+            c.setdefault("pack_loras", {})[anima_key] = loras
         save_local_config(c)
         log.info("Settings saved to local_config.json")
         return c

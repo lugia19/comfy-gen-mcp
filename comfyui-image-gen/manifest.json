@@ -43,7 +43,7 @@
     "settings_notice": {
       "type": "string",
       "title": "Configuration",
-      "description": "Settings (models, artist styles, sampling steps, LoRAs, ComfyUI URL, custom workflows) are managed in the Comfy-Gen-MCP server window that opens after first run — look for its tray icon and click Settings. This field is unused.",
+      "description": "Settings (models, artist styles, LoRAs, ComfyUI URL, custom workflows) are managed in the Comfy-Gen-MCP server window that opens after first run — look for its tray icon and click Settings. This field is unused.",
       "required": false
     }
   },

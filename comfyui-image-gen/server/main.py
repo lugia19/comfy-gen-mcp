@@ -65,6 +65,24 @@ _file_handler.setFormatter(_log_fmt)
 
 logging.basicConfig(level=logging.INFO, handlers=[_stderr_handler, _file_handler])
 
+# httpx logs every outbound request at INFO (system_stats health poll every 3s, /queue every 1s
+# during a job, /history, /view, ...) — all noise. The events that matter (a new prompt submitted,
+# the queue state) are logged by our own comfy-mcp logger instead.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+class _DropAliveAccessLog(logging.Filter):
+    """Drop uvicorn access-log lines for the /alive keepalive endpoint (the shim pings it every
+    ~15s). Other request access logs (MCP calls) are kept. The access record's args tuple is
+    (client_addr, method, path, http_version, status), so the path is args[2]."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and str(args[2]).startswith("/alive"))
+
+
+logging.getLogger("uvicorn.access").addFilter(_DropAliveAccessLog())
+
 
 def _env(key: str) -> str | None:
     """Read env var, treating unsubstituted ${user_config.*} as unset."""
@@ -319,15 +337,19 @@ async def _run_generation(prompt: str, pack: dict, aspect_ratio: str) -> CallToo
 # ── Startup ───────────────────────────────────────────────────────────
 
 def _apply_loras_to_pack(pack: dict) -> None:
-    """Apply per-pack LoRAs from local_config.json (anima pack only, model-only).
+    """Apply per-pack LoRAs from local_config.json (Anima-family packs only, model-only).
+
+    LoRAs are read from the pack's shared config bucket (``config_key``, defaulting to the
+    pack name), so Anima and Anima Turbo share one LoRA list.
 
     Mutates pack['workflow'] in place. Malformed entries and injection failures are
     logged and skipped rather than failing startup.
     """
-    raw_loras = load_local_config().get("pack_loras", {}).get(pack["name"])
-    if raw_loras and pack["name"] != "anima":
+    config_key = pack.get("config_key", pack["name"])
+    raw_loras = load_local_config().get("pack_loras", {}).get(config_key)
+    if raw_loras and not pack.get("default_artist_list"):
         log.warning("Pack '%s': pack_loras configured but LoRAs are only supported for "
-                    "the 'anima' pack — ignoring", pack["name"])
+                    "the Anima-family packs — ignoring", pack["name"])
         return
     if not raw_loras:
         return
@@ -367,23 +389,13 @@ def _apply_loras_to_pack(pack: dict) -> None:
             log.error("Pack '%s': failed to inject LoRAs (%s); serving pack unmodified", pack["name"], e)
 
 
-def _apply_pack_customizations(packs: list[dict], groups: dict[str, list[dict]],
-                               anima_steps: str | None) -> None:
+def _apply_pack_customizations(packs: list[dict], groups: dict[str, list[dict]]) -> None:
     """Finalize each resolved pack's tool description (group override + artist-list
-    substitution, via the shared resolve_tool_description), apply the anima step override, and
-    inject LoRAs (mutates packs in place)."""
+    substitution, via the shared resolve_tool_description) and inject LoRAs (mutates packs in
+    place)."""
     for pack in packs:
         pack["tool_description"] = resolve_tool_description(pack, groups, env_reader=_env)
         log.info("Pack '%s' tool description finalized", pack["name"])
-
-        if pack["name"] == "anima" and anima_steps:
-            try:
-                steps = int(anima_steps)
-                pack["workflow"]["19"]["inputs"]["steps"] = steps
-                log.info("Pack 'anima' steps overridden to %d", steps)
-            except ValueError:
-                log.warning("Invalid ANIMA_STEPS value '%s', keeping default", anima_steps)
-
         _apply_loras_to_pack(pack)
 
 
@@ -443,14 +455,12 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     custom_workflow = _env("CUSTOM_WORKFLOW")
     custom_workflow_prompt_node_title = _env("CUSTOM_WORKFLOW_PROMPT_NODE")
     anima_artists = _env("ANIMA_ARTISTS")
-    anima_steps = _env("ANIMA_STEPS")
 
     log.info("=== Comfy-Gen-MCP startup ===")
     log.info("Mode: %s", "HTTP" if is_http_mode() else "DXT/stdio")
     log.info("COMFYUI_URL=%s", comfyui_url)
     log.info("CUSTOM_WORKFLOW=%s", custom_workflow or "(none)")
     log.info("ANIMA_ARTISTS=%s", anima_artists or "(default)")
-    log.info("ANIMA_STEPS=%s", anima_steps or "(default: 30)")
 
     # Detect comfy-cli and ComfyUI. This cold-starts comfy-cli (slow on first launch), so
     # run it on a worker thread behind a responsive "starting up" dialog. A static splash
@@ -509,8 +519,8 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     packs = resolve_pack_selections(groups, env_reader=_env)
     log.info("Resolved packs: %s", [p["name"] for p in packs])
 
-    # Finalize tool descriptions (group override + artist list) and apply anima steps + LoRAs.
-    _apply_pack_customizations(packs, groups, anima_steps)
+    # Finalize tool descriptions (group override + artist list) and inject LoRAs.
+    _apply_pack_customizations(packs, groups)
 
     # Load custom workflow as a separate tool
     custom_pack, custom_workflow_error = _load_custom_pack(
@@ -730,12 +740,11 @@ def _seed_env_from_config() -> None:
         "COMFYUI_URL": "comfyui_url",
         "CUSTOM_WORKFLOW": "custom_workflow",
         "CUSTOM_WORKFLOW_PROMPT_NODE": "custom_workflow_prompt_node",
-        "ANIMA_STEPS": "anima_steps",
     }
     for env_key, cfg_key in env_map.items():
         val = local_cfg.get(cfg_key)
         if val and env_key not in os.environ:
-            os.environ[env_key] = str(val)  # env values must be strings (anima_steps is int)
+            os.environ[env_key] = str(val)  # env values must be strings
 
 
 def _build_http_app(args) -> tuple[FastMCP, str]:

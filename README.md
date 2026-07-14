@@ -85,10 +85,9 @@ Packs you don't download up front are fetched automatically the first time you u
 Everything is managed in the **Settings panel** — click **Settings** in the Comfy-Gen-MCP server window (look for the tray icon), or in Claude Desktop go to Settings > Extensions > Configure for comfyui-image-gen.
 
 Settings include:
-- **Model selection** — which pack backs `generate_realistic_image` (Flux 2 Klein vs Z-Image Turbo)
-- **Anima artist styles** — @artist tags blended into Anima prompts (browse them at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html))
-- **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Anima-only for now.
-- **Anima sampling steps** — default 30; higher is slower but can improve quality
+- **Model selection** — which pack backs each tool: `generate_realistic_image` (Flux 2 Klein vs Z-Image Turbo) and `generate_illustrated_image` (Anima vs Anima Turbo)
+- **Anima artist styles** — @artist tags blended into Anima prompts (browse them at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html)); shared by both Anima and Anima Turbo
+- **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Anima-family only for now; shared by both Anima and Anima Turbo.
 - **ComfyUI URL** — default `http://127.0.0.1:8188`. If that port is taken, the managed ComfyUI automatically falls back to a free port. Only change this if you want to point at your *own* already-running ComfyUI instead of the managed one.
 - **Custom workflow** — path to a ComfyUI workflow exported in **API format** (.json). Setting it adds the `generate_custom_image` tool.
 - **Custom workflow prompt node** — title of the node that receives the prompt text (auto-detected from the first KSampler's positive input if left blank).

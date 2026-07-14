@@ -73,6 +73,12 @@ class ComfyJob:
             self.status = "running"
             log.info("Job %s queued as prompt_id=%s", self.token, self.prompt_id)
 
+            ids = self._get_queue_ids()
+            if ids is not None:
+                running_ids, pending_ids = ids
+                log.info("Job %s: %d job(s) in ComfyUI queue (%d running, %d pending)",
+                         self.token, len(running_ids) + len(pending_ids), len(running_ids), len(pending_ids))
+
             # Connect websocket for progress (best-effort)
             ws = None
             try:

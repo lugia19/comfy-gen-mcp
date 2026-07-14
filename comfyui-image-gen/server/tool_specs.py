@@ -111,6 +111,7 @@ def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_read
     """
     desc = pack["tool_description"]
     tool_name = pack["tool_name"]
+    config_key = pack.get("config_key", pack["name"])
     if len(groups.get(tool_name, [])) > 1 and pack.get("group_tool_description"):
         desc = pack["group_tool_description"]
 
@@ -118,7 +119,7 @@ def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_read
         anima_artists = env_reader("ANIMA_ARTISTS") if env_reader else None
         artists_str = (
             anima_artists
-            or load_local_config().get("pack_settings", {}).get(pack["name"], {}).get("artist_list")
+            or load_local_config().get("pack_settings", {}).get(config_key, {}).get("artist_list")
             or pack["default_artist_list"]
         )
         parts = [a.strip() for a in artists_str.split(",") if a.strip()]
@@ -131,7 +132,7 @@ def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_read
         desc = desc.replace("{artist_list}", artist_display)
 
     if "{lora_triggers}" in desc:
-        loras = load_local_config().get("pack_loras", {}).get(pack["name"], [])
+        loras = load_local_config().get("pack_loras", {}).get(config_key, [])
         triggers: list[str] = []
         for e in loras:
             trig = (e.get("trigger") or "").strip() if isinstance(e, dict) else ""

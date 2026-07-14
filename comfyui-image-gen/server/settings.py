@@ -29,15 +29,6 @@ SETTINGS_SCHEMA: list[dict] = [
         "default": COMFYUI_DEFAULT_URL,
     },
     {
-        "key": "anima_steps",
-        "title": "Anima Sampling Steps",
-        "description": "Sampling steps for the Anima model. Higher is slower but can improve quality.",
-        "type": "int",
-        "default": 30,
-        "min": 1,
-        "max": 150,
-    },
-    {
         "key": "custom_workflow",
         "title": "Custom Workflow Path",
         "description": (
