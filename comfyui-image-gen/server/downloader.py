@@ -54,13 +54,23 @@ class DownloadState:
             }
 
 
-def download_models(models_dir: str, models: list[dict], state: DownloadState):
-    """Download missing model files. Takes an explicit models list."""
-    log.info("Checking for missing models in: %s", models_dir)
+def download_models(models_dir: str, models: list[dict], state: DownloadState,
+                    extra_search_dirs: list[str] | None = None):
+    """Download missing model files into models_dir. Takes an explicit models list.
+
+    A model already present in models_dir OR any extra_search_dirs (shared donor
+    installs, visible to ComfyUI via extra_model_paths) is not downloaded."""
+    log.info("Checking for missing models in: %s (+%d shared dirs)", models_dir, len(extra_search_dirs or []))
+
+    def present(model) -> bool:
+        return any(
+            os.path.isfile(os.path.join(d, model["subfolder"], model["filename"]))
+            for d in [models_dir, *(extra_search_dirs or [])]
+        )
+
     missing = []
     for model in models:
-        dest = os.path.join(models_dir, model["subfolder"], model["filename"])
-        if not os.path.isfile(dest):
+        if not present(model):
             missing.append(model)
             log.info("  MISSING: %s/%s", model["subfolder"], model["filename"])
         else:

@@ -25,17 +25,22 @@ if _ext_dir not in sys.path:
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
+from server import comfy_registry
 from server.comfyui import (
     check_required_nodes,
     clear_object_info_cache,
     ensure_manager_installed,
+    external_models_dir,
     find_comfy_cli,
+    find_comfyui_installation,
     find_comfyui_url,
     find_models_dir,
+    gather_shared_dirs,
     install_custom_nodes,
     launch_comfyui,
     stop_comfyui,
     upload_image,
+    write_extra_model_paths,
 )
 from server.config import (
     COMFYUI_DEFAULT_URL,
@@ -96,7 +101,13 @@ def _env(key: str) -> str | None:
 comfyui_url: str = COMFYUI_DEFAULT_URL
 comfy_cli_path: str | None = None
 comfyui_process: subprocess.Popen | None = None
-models_dir: str | None = None
+models_dir: str | None = None  # OUR install's models dir — downloads land here
+shared_models_dirs: list[str] = []  # other installs' models dirs (registry / comfy which / extra_models_dir)
+
+
+def _search_dirs() -> list[str]:
+    """Everywhere a model may already exist: our dir first, then shared donors."""
+    return ([models_dir] if models_dir else []) + shared_models_dirs
 
 # Per-pack download state: pack_name → True if download in progress
 _downloading: dict[str, bool] = {}
@@ -242,7 +253,7 @@ def _launch_download(pack: dict):
         from server.downloader import DownloadState, download_models
         log.info("No server window available, downloading silently for %s", pack["name"])
         state = DownloadState()
-        download_models(models_dir or "", pack_models, state)
+        download_models(models_dir or "", pack_models, state, extra_search_dirs=shared_models_dirs)
 
 
 def _download_in_background(pack: dict):
@@ -279,7 +290,7 @@ def _check_and_download_models(pack: dict) -> str | None:
             "Cannot find ComfyUI's models directory. "
             "Please run the first-time setup to install ComfyUI, then try again."
         )
-    if check_models_present(models_dir, pack):
+    if check_models_present(_search_dirs(), pack):
         return None
     pack_name = pack["display_name"]
     log.info("Models missing for %s, launching download...", pack_name)
@@ -368,7 +379,7 @@ def _apply_loras_to_pack(pack: dict) -> None:
             log.warning("Pack '%s': invalid strength for LoRA '%s', using 1.0", pack["name"], name)
             strength = 1.0
         trigger = str(entry.get("trigger") or "").strip()
-        if models_dir and not os.path.isfile(os.path.join(models_dir, "loras", name)):
+        if models_dir and not any(os.path.isfile(os.path.join(d, "loras", name)) for d in _search_dirs()):
             log.warning(
                 "Pack '%s': LoRA file not found in models/loras: %s (generation will fail "
                 "until you place it there)", pack["name"], name
@@ -449,7 +460,7 @@ def _launch_comfyui_background() -> None:
 
 def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | None]:
     """Load model packs, detect ComfyUI, return (selected_packs, groups, custom_pack, custom_workflow_error)."""
-    global comfyui_url, comfy_cli_path, models_dir
+    global comfyui_url, comfy_cli_path, models_dir, shared_models_dirs
 
     comfyui_url = _env("COMFYUI_URL") or COMFYUI_DEFAULT_URL
     custom_workflow = _env("CUSTOM_WORKFLOW")
@@ -515,6 +526,20 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
             log.error("ComfyUI models dir still not found after setup. Exiting.")
             sys.exit(1)
 
+    # Cross-app model sharing: publish our install to ~/.comfy-registry and point
+    # our extra_model_paths.yaml at every other install's models (registry entries,
+    # the comfy-cli workspace, the configured extra dir). Must happen BEFORE
+    # ComfyUI launches — it reads the yaml at startup.
+    install_path = find_comfyui_installation()
+    if install_path and models_dir:
+        comfy_registry.publish("comfy-gen-mcp", install_path, models_dir)
+        cfg_now = load_local_config()
+        external = external_models_dir(comfy_cli_path) if comfy_cli_path else None
+        shared_models_dirs = gather_shared_dirs(
+            models_dir, external, str(cfg_now.get("extra_models_dir") or ""))
+        write_extra_model_paths(install_path, shared_models_dirs)
+        log.info("Shared model dirs: %s", shared_models_dirs or "(none)")
+
     # Resolve one pack per tool_name group based on user config
     packs = resolve_pack_selections(groups, env_reader=_env)
     log.info("Resolved packs: %s", [p["name"] for p in packs])
@@ -530,7 +555,7 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     # Log model status
     for pack in packs:
         if models_dir:
-            present = check_models_present(models_dir, pack)
+            present = check_models_present(_search_dirs(), pack)
             log.info("Pack '%s': models %s", pack["name"], "OK" if present else "MISSING (will download on use)")
         else:
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])

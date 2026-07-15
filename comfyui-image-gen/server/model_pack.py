@@ -44,21 +44,21 @@ def load_all_packs(packs_dir: str) -> list[dict]:
     return packs
 
 
-def check_models_present(models_dir: str, pack: dict) -> bool:
-    """Check if all of a model pack's models exist in models_dir."""
-    for m in pack["models"]:
-        if not os.path.isfile(os.path.join(models_dir, m["subfolder"], m["filename"])):
-            return False
-    return True
+def _model_found(models_dirs: str | list[str], m: dict) -> bool:
+    """A model counts as present if it exists in ANY of the given models dirs
+    (our own install plus shared donors via extra_model_paths)."""
+    dirs = [models_dirs] if isinstance(models_dirs, str) else models_dirs
+    return any(os.path.isfile(os.path.join(d, m["subfolder"], m["filename"])) for d in dirs)
 
 
-def get_missing_models(models_dir: str, pack: dict) -> list[dict]:
-    """Return list of model definitions that are not yet downloaded."""
-    missing = []
-    for m in pack["models"]:
-        if not os.path.isfile(os.path.join(models_dir, m["subfolder"], m["filename"])):
-            missing.append(m)
-    return missing
+def check_models_present(models_dirs: str | list[str], pack: dict) -> bool:
+    """Check if all of a model pack's models exist across the given models dir(s)."""
+    return all(_model_found(models_dirs, m) for m in pack["models"])
+
+
+def get_missing_models(models_dirs: str | list[str], pack: dict) -> list[dict]:
+    """Return list of model definitions found in none of the given models dir(s)."""
+    return [m for m in pack["models"] if not _model_found(models_dirs, m)]
 
 
 def group_packs_by_tool(packs: list[dict]) -> dict[str, list[dict]]:

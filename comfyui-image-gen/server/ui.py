@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from server.config import EXTENSION_VERSION, MODEL_PACKS_DIR, load_local_config, save_local_config
-from server.comfyui import find_comfy_cli, find_models_dir, install_comfyui, remove_comfyui_dir, _detect_gpu, _default_install_dir
+from server.comfyui import all_search_dirs, find_comfy_cli, find_models_dir, install_comfyui, remove_comfyui_dir, _detect_gpu, _default_install_dir
 
 log = logging.getLogger("comfy-mcp")
 
@@ -290,21 +290,11 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
 
     layout.addWidget(QLabel("<b>Install ComfyUI via comfy-cli</b>"))
 
-    # Install directory
-    layout.addWidget(QLabel("Install location:"))
-    dir_row = QHBoxLayout()
-    dir_edit = QLineEdit(_default_install_dir())
-    dir_browse_btn = QPushButton("Browse...")
-    dir_row.addWidget(dir_edit)
-    dir_row.addWidget(dir_browse_btn)
-    layout.addLayout(dir_row)
-
-    def on_browse_dir():
-        path = QFileDialog.getExistingDirectory(parent, "Select install directory")
-        if path:
-            dir_edit.setText(path)
-
-    dir_browse_btn.clicked.connect(on_browse_dir)
+    # Fixed install location: the runtime env is only a few GB (models are shared
+    # across installs via extra_model_paths), so it isn't worth a choice.
+    loc_label = QLabel(f"Install location: {_default_install_dir()}")
+    loc_label.setWordWrap(True)
+    layout.addWidget(loc_label)
 
     # GPU selection
     layout.addWidget(QLabel("GPU type:"))
@@ -362,12 +352,10 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
     def on_install():
         import shutil
         selected_gpu = next((k for k, rb in gpu_radios.items() if rb.isChecked()), detected_gpu)
-        install_dir = dir_edit.text().strip()
-        if not install_dir:
-            error_label.setText("Please specify an install directory.")
-            return
+        install_dir = _default_install_dir()
 
-        # If the directory exists and isn't a valid git repo, offer to delete it
+        # If the directory exists (a broken/partial previous install — a valid one
+        # never reaches this page), offer to delete it
         if os.path.isdir(install_dir) and not os.path.isdir(os.path.join(install_dir, ".git")):
             reply = QMessageBox.question(
                 parent,
@@ -384,8 +372,6 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
                 return
 
         install_btn.setEnabled(False)
-        dir_edit.setEnabled(False)
-        dir_browse_btn.setEnabled(False)
         progress.setVisible(True)
         pulse_timer.start(30)
         status_label.setText("Installing ComfyUI... this may take several minutes.")
@@ -427,8 +413,6 @@ def _build_comfyui_install_panel(parent: QWidget, on_install_ready):
             status_label.setText("")
             error_label.setText(f"Installation failed: {install_state['error']}")
             install_btn.setEnabled(True)
-            dir_edit.setEnabled(True)
-            dir_browse_btn.setEnabled(True)
 
     poll_timer = QTimer(parent)
     poll_timer.timeout.connect(poll_install)
@@ -523,16 +507,23 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         if ftype == "text":
             w = QLineEdit(str(cur))
             layout.addWidget(w)
-        elif ftype == "path":
+        elif ftype in ("path", "dir"):
             row = QHBoxLayout()
             w = QLineEdit(str(cur))
             browse = QPushButton("Browse...")
             browse.setFixedWidth(100)
-            browse.clicked.connect(
-                lambda _=False, ww=w: (
-                    lambda p: ww.setText(p) if p else None
-                )(QFileDialog.getOpenFileName(parent, "Select workflow JSON", "", "JSON (*.json)")[0])
-            )
+            if ftype == "dir":
+                browse.clicked.connect(
+                    lambda _=False, ww=w: (
+                        lambda p: ww.setText(p) if p else None
+                    )(QFileDialog.getExistingDirectory(parent, "Select folder"))
+                )
+            else:
+                browse.clicked.connect(
+                    lambda _=False, ww=w: (
+                        lambda p: ww.setText(p) if p else None
+                    )(QFileDialog.getOpenFileName(parent, "Select workflow JSON", "", "JSON (*.json)")[0])
+                )
             row.addWidget(w)
             row.addWidget(browse)
             layout.addLayout(row)
@@ -592,12 +583,16 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
 
         comfy_cli = find_comfy_cli()
         mdir = run_off_main("Locating ComfyUI…", find_models_dir, comfy_cli) if comfy_cli else None
-        loras_dir = os.path.join(mdir, "loras") if mdir else None
+        lora_search_dirs = run_off_main("Locating shared models…", all_search_dirs, mdir) if mdir else []
 
         def list_loras() -> list[str]:
-            if loras_dir and os.path.isdir(loras_dir):
-                return sorted(f for f in os.listdir(loras_dir) if f.lower().endswith(".safetensors"))
-            return []
+            # Own install's loras plus shared donors' — all usable via extra_model_paths.
+            names: set[str] = set()
+            for d in lora_search_dirs:
+                loras = os.path.join(d, "loras")
+                if os.path.isdir(loras):
+                    names.update(f for f in os.listdir(loras) if f.lower().endswith(".safetensors"))
+            return sorted(names)
 
         available = list_loras()
 
@@ -685,7 +680,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                     sel[tool_name] = chosen["name"]
             c["pack_selections"] = sel
         for key, (ftype, w) in field_widgets.items():
-            if ftype in ("text", "path"):
+            if ftype in ("text", "path", "dir"):
                 c[key] = w.text().strip()
             elif ftype == "int":
                 c[key] = int(w.value())
@@ -741,12 +736,8 @@ def run_settings_dialog(managed: bool = False):
 
     def _on_uninstall():
         comfy_cli = find_comfy_cli()
-        install_path = None
-        if comfy_cli:
-            from server.comfyui import _comfy_which
-            install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli)
-        if not install_path or not os.path.isdir(install_path):
-            install_path = _default_install_dir()
+        from server.comfyui import find_comfyui_installation
+        install_path = find_comfyui_installation() or _default_install_dir()
         app_dir = os.path.dirname(_default_install_dir())  # ~/.comfy-gen-mcp
 
         if not install_path or not os.path.isdir(install_path):
@@ -760,6 +751,8 @@ def run_settings_dialog(managed: bool = False):
         reply = QMessageBox.question(
             dialog, "Uninstall ComfyUI",
             f"This permanently deletes ComfyUI and all downloaded models at:\n{install_path}\n\n"
+            "Note: models in this folder may be shared with other apps (via ~/.comfy-registry) — "
+            "they would need to re-download them.\n\n"
             "The app will then quit so you can remove the program. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -984,7 +977,8 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
             dl_state.update(status="idle", error=None)
             dl_retry_btn.setEnabled(False)
             dl_error_label.setText("")
-            t = threading.Thread(target=download_models, args=(state["models_dir"], all_models, dl_state), daemon=True)
+            t = threading.Thread(target=download_models, args=(state["models_dir"], all_models, dl_state),
+                                 kwargs={"extra_search_dirs": all_search_dirs(state["models_dir"])[1:]}, daemon=True)
             download_thread_holder.clear()
             download_thread_holder.append(t)
             t.start()
@@ -1040,10 +1034,16 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 def run_download_ui(models_dir: str, models: list[dict], title: str):
     """Show model download progress for a single pack."""
     log.info("Opening download UI: title=%r, %d models", title, len(models))
+    from server.comfyui import all_search_dirs
     from server.downloader import DownloadState, download_models
 
+    search_dirs = all_search_dirs(models_dir) or [models_dir]
+
     def _all_present():
-        return all(os.path.isfile(os.path.join(models_dir, m["subfolder"], m["filename"])) for m in models)
+        return all(
+            any(os.path.isfile(os.path.join(d, m["subfolder"], m["filename"])) for d in search_dirs)
+            for m in models
+        )
 
     if _all_present():
         log.info("All models already present.")
@@ -1081,7 +1081,8 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
         dl_state.update(status="idle", error=None)
         retry_btn.setEnabled(False)
         error_label.setText("")
-        t = threading.Thread(target=download_models, args=(models_dir, models, dl_state), daemon=True)
+        t = threading.Thread(target=download_models, args=(models_dir, models, dl_state),
+                             kwargs={"extra_search_dirs": search_dirs[1:]}, daemon=True)
         download_thread_holder.clear()
         download_thread_holder.append(t)
         t.start()
@@ -1427,13 +1428,8 @@ class ServerWindow(QMainWindow):
     def _reinstall_comfyui(self):
         """Nuke the ComfyUI installation directory and quit so the user can re-run setup."""
         comfy_cli = find_comfy_cli()
-        install_path = None
-        if comfy_cli:
-            from server.comfyui import _comfy_which
-            install_path = run_off_main("Locating ComfyUI…", _comfy_which, comfy_cli)
-
-        if not install_path or not os.path.isdir(install_path):
-            install_path = _default_install_dir()
+        from server.comfyui import find_comfyui_installation
+        install_path = find_comfyui_installation() or _default_install_dir()
 
         if not install_path or not os.path.isdir(install_path):
             QMessageBox.warning(self, "Error", "Could not find a ComfyUI installation to remove.")

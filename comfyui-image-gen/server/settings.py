@@ -9,7 +9,7 @@ Each field is a dict:
   key         local_config.json key
   title       label shown in the panel
   description help text shown under the field
-  type        "text" | "path" | "int" | "bool" — drives the widget
+  type        "text" | "path" | "dir" | "int" | "bool" — drives the widget
   default     default value (its native type)
   min, max    (int only) spin-box bounds
   seed        whether to seed into local_config defaults (default True). False = the
@@ -46,6 +46,17 @@ SETTINGS_SCHEMA: list[dict] = [
             "If empty, it's auto-detected from the first KSampler's positive input."
         ),
         "type": "text",
+        "default": "",
+    },
+    {
+        "key": "extra_models_dir",
+        "title": "Existing models directory",
+        "description": (
+            "Optional extra read-only model source — another ComfyUI's models folder that "
+            "isn't auto-detected (via comfy-cli or ~/.comfy-registry). Models and LoRAs "
+            "found there are used without re-downloading. Takes effect after restart."
+        ),
+        "type": "dir",
         "default": "",
     },
     {

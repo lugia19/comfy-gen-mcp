@@ -1,5 +1,6 @@
 """ComfyUI management via comfy-cli — detection, installation, launching, and health checks."""
 
+import json
 import logging
 import os
 import platform
@@ -11,6 +12,7 @@ import time
 
 import httpx
 
+from . import comfy_registry
 from .config import COMFYUI_DEFAULT_PORT, COMFYUI_DEFAULT_URL
 
 log = logging.getLogger("comfy-mcp")
@@ -131,32 +133,46 @@ def _comfy_which_uncached(comfy_cli: str) -> str | None:
             return None
 
         for line in result.stdout.splitlines():
-            if "Target ComfyUI path:" in line:
+            # comfy-cli >= 1.12 emits a JSON envelope; older versions plain text.
+            if line.lstrip().startswith("{"):
+                try:
+                    path = json.loads(line).get("data", {}).get("workspace_path")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+            elif "Target ComfyUI path:" in line:
                 path = line.split(":", 1)[1].strip()
-                if path and os.path.isdir(path):
-                    return path
+            else:
+                continue
+            if path and os.path.isdir(path):
+                return path
         return None
     except Exception as e:
         log.debug("Failed to run comfy which: %s", e)
         return None
 
 
-def find_comfyui_installation(comfy_cli: str) -> str | None:
-    """Find an existing ComfyUI installation via `comfy which`."""
-    path = _comfy_which(comfy_cli)
-    if path:
-        log.info("ComfyUI installation: %s", path)
-    else:
-        log.info("ComfyUI installation not found")
-    return path
+def find_comfyui_installation(comfy_cli: str | None = None) -> str | None:
+    """OUR ComfyUI install at the fixed location (~/.comfy-gen-mcp/comfyui), or None.
+
+    Deliberately does NOT consult `comfy which`: the global default workspace is
+    another tool's (or the user's) install — we only borrow its models via
+    extra_model_paths (see external_models_dir), never run it. comfy_cli param
+    kept for call-site compatibility; unused.
+    """
+    base = _default_install_dir()
+    for candidate in (base, os.path.join(base, "ComfyUI")):
+        if os.path.isfile(os.path.join(candidate, "main.py")) and os.path.isdir(os.path.join(candidate, "models")):
+            log.info("ComfyUI installation: %s", candidate)
+            return candidate
+    log.info("ComfyUI installation not found at %s", base)
+    return None
 
 
-def find_models_dir(comfy_cli: str) -> str | None:
-    """Find the ComfyUI models directory by querying comfy-cli.
+def find_models_dir(comfy_cli: str | None = None) -> str | None:
+    """Our own install's models directory (downloads land here; shared dirs are separate).
 
     Cached once found (see reset_detection_cache()). Without this, the post-install UI
-    refresh re-runs this on the main thread and each call cold-shells out to comfy-cli
-    (seconds each), freezing the window.
+    refresh re-runs this on the main thread repeatedly during setup.
     """
     if "models_dir" in _DETECT_CACHE:
         return _DETECT_CACHE["models_dir"]
@@ -166,29 +182,77 @@ def find_models_dir(comfy_cli: str) -> str | None:
     return result
 
 
-def _find_models_dir_uncached(comfy_cli: str) -> str | None:
-    """Falls back to checking the default install directory if comfy which points elsewhere."""
-    install_path = find_comfyui_installation(comfy_cli)
+def _find_models_dir_uncached(comfy_cli: str | None = None) -> str | None:
+    install_path = find_comfyui_installation()
     if install_path:
         models_dir = os.path.join(install_path, "models")
-        if os.path.isdir(models_dir):
-            log.info("Models dir: %s", models_dir)
-            return models_dir
-        log.warning("Expected models dir does not exist: %s", models_dir)
-
-    # Fallback: check our default install location
-    fallback = os.path.join(_default_install_dir(), "models")
-    if os.path.isdir(fallback):
-        log.info("Models dir from default install location: %s", fallback)
-        default_install = _default_install_dir()
-        try:
-            _run_comfy(comfy_cli, "set-default", default_install, timeout=10)
-            log.info("Corrected default workspace to: %s", default_install)
-        except Exception:
-            pass
-        return fallback
-
+        log.info("Models dir: %s", models_dir)
+        return models_dir
     return None
+
+
+def external_models_dir(comfy_cli: str) -> str | None:
+    """The models dir of the comfy-cli default workspace (a user's or another
+    tool's install), if any — a read-only model source, never our install."""
+    external = _comfy_which(comfy_cli)
+    if not external:
+        return None
+    models = os.path.join(external, "models")
+    return models if os.path.isdir(models) else None
+
+
+# ComfyUI's standard model subfolders, shared broadly: our packs' needs vary
+# (checkpoints for illustrated/realistic, diffusion_models for Anima, ...) and
+# donor installs may hold anything useful.
+_SHARED_SUBFOLDERS = [
+    "checkpoints", "clip", "clip_vision", "controlnet", "diffusion_models",
+    "embeddings", "loras", "text_encoders", "unet", "upscale_models", "vae",
+]
+
+
+def gather_shared_dirs(own_models_dir: str, external: str | None, extra_models_dir: str = "") -> list[str]:
+    """Every other install's models dir, for extra_model_paths + presence checks:
+    ~/.comfy-registry entries, the comfy-cli workspace (`external`), and the
+    user-configured extra dir. Existing dirs only, deduped by canonical path,
+    own dir excluded."""
+    own = comfy_registry.canon_path(own_models_dir)
+    dirs: dict[str, str] = {}
+    for cand in [*comfy_registry.shared_models_dirs(own_models_dir), external, extra_models_dir]:
+        if cand and os.path.isdir(cand) and comfy_registry.canon_path(cand) != own:
+            dirs.setdefault(comfy_registry.canon_path(cand), cand)
+    return list(dirs.values())
+
+
+def all_search_dirs(own_models_dir: str | None) -> list[str]:
+    """[own models dir, *shared dirs] — the full model-presence search list.
+    Shared = ~/.comfy-registry entries + comfy-cli workspace + configured
+    extra_models_dir. Empty when no own install exists yet."""
+    if not own_models_dir:
+        return []
+    from .config import load_local_config  # local import: config <-> settings cycle caution
+    cli = find_comfy_cli()
+    external = external_models_dir(cli) if cli else None
+    extra = str(load_local_config().get("extra_models_dir") or "")
+    return [own_models_dir] + gather_shared_dirs(own_models_dir, external, extra)
+
+
+def write_extra_model_paths(install_path: str, external_models: list[str]) -> None:
+    """ComfyUI's native model-sharing: an extra_model_paths.yaml in OUR install
+    pointing (read-only) at other installs' models dirs. No links, no writes
+    into the other installs; if one disappears, ComfyUI simply doesn't find the
+    models and our downloader fetches into our own dir. Refreshed every startup."""
+    yaml_path = os.path.join(install_path, "extra_model_paths.yaml")
+    if not external_models:
+        if os.path.isfile(yaml_path):
+            os.remove(yaml_path)
+        return
+    lines = []
+    for i, models_dir in enumerate(external_models, 1):
+        lines += [f"shared-{i}:", f"    base_path: {models_dir}"]
+        lines += [f"    {sub}: {sub}" for sub in _SHARED_SUBFOLDERS]
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    log.info("extra_model_paths.yaml -> %s", ", ".join(external_models))
 
 
 # ── ComfyUI installation ────────────────────────────────────────────
@@ -385,24 +449,17 @@ def install_comfyui(comfy_cli: str, gpu: str | None = None, install_dir: str | N
             install_path = candidate
             break
     if not install_path:
-        install_path = _comfy_which(comfy_cli)
-    if not install_path:
         raise RuntimeError("ComfyUI installed but installation path could not be determined")
 
-    try:
-        _run_comfy(comfy_cli, "set-default", install_path, timeout=10)
-        log.info("Set default ComfyUI workspace: %s", install_path)
-    except Exception as e:
-        log.warning("Failed to set default workspace: %s", e)
+    # Deliberately NO `comfy set-default`: this install is entirely ours,
+    # invisible to comfy-cli's global workspace config. Other tools' installs
+    # are shared read-only via extra_model_paths, and vice versa through
+    # ~/.comfy-registry.
 
-    # We just installed it and know exactly where it is. Prime the detection cache with the
-    # known-good path so the wizard's post-install UI refresh (find_models_dir /
-    # find_comfyui_installation, called on the main thread) returns instantly instead of
-    # cold-shelling out to comfy-cli — which is seconds-slow here and, worse, `comfy which`
-    # reports "not found" right after install, sending find_models_dir into a fallback that
-    # re-runs `set-default` on every call and freezes the window.
+    # We just installed it and know exactly where it is. Prime the detection cache so the
+    # wizard's post-install UI refresh (find_models_dir, called on the main thread)
+    # returns instantly.
     reset_detection_cache()
-    _DETECT_CACHE[("which", comfy_cli)] = install_path
     models = os.path.join(install_path, "models")
     if os.path.isdir(models):
         _DETECT_CACHE["models_dir"] = models
@@ -501,7 +558,13 @@ def launch_comfyui(comfy_cli: str, port: int = COMFYUI_DEFAULT_PORT,
     set_launch_error(None)  # optimistic: new attempt clears any prior failure
 
     log.info("Launching ComfyUI via comfy-cli: port=%d", port)
-    args = [comfy_cli, "launch", "--", "--port", str(port)]
+    # --workspace pins the launch to OUR install; without it comfy-cli launches
+    # whatever the global default workspace happens to be (another tool's install).
+    own_install = find_comfyui_installation()
+    if not own_install:
+        set_launch_error("ComfyUI is not installed. Run the first-time setup (restart the extension).")
+        raise RuntimeError("ComfyUI is not installed at the managed location")
+    args = [comfy_cli, "--workspace", own_install, "launch", "--", "--port", str(port)]
 
     # Log ComfyUI output to a file (in our shared logs/ dir) to avoid pipe deadlocks
     from .config import ensure_logs_dir
@@ -562,7 +625,9 @@ def stop_comfyui(comfy_cli: str, process: subprocess.Popen | None = None):
         log.info("ComfyUI process tree terminated")
     else:
         try:
-            _run_comfy(comfy_cli, "stop", timeout=10)
+            own_install = find_comfyui_installation()
+            args = (["--workspace", own_install] if own_install else []) + ["stop"]
+            _run_comfy(comfy_cli, *args, timeout=10)
         except Exception as e:
             log.warning("Failed to stop ComfyUI: %s", e)
 
@@ -611,7 +676,7 @@ def ensure_manager_installed(comfy_cli: str) -> bool:
     are installed via `comfy node install` after ComfyUI is running.
     Returns True if manager is available.
     """
-    install_path = _comfy_which(comfy_cli)
+    install_path = find_comfyui_installation()
     if not install_path:
         log.warning("Cannot ensure manager: ComfyUI installation not found")
         return False
@@ -642,10 +707,12 @@ def ensure_manager_installed(comfy_cli: str) -> bool:
 def install_custom_nodes(comfy_cli: str, nodes: list[str]) -> list[str]:
     """Install custom nodes via comfy-cli (when ComfyUI is running). Returns list of failures."""
     failed = []
+    own_install = find_comfyui_installation()
+    workspace_args = ["--workspace", own_install] if own_install else []
     for node in nodes:
         log.info("Installing custom node via comfy-cli: %s", node)
         try:
-            result = _run_comfy(comfy_cli, "node", "install", node, timeout=300)
+            result = _run_comfy(comfy_cli, *workspace_args, "node", "install", node, timeout=300)
             if result.returncode != 0:
                 log.error("Failed to install node %s: %s", node, result.stderr.strip())
                 failed.append(node)
