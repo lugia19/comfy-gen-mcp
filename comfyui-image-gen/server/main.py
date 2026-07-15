@@ -532,12 +532,14 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
     # ComfyUI launches — it reads the yaml at startup.
     install_path = find_comfyui_installation()
     if install_path and models_dir:
-        comfy_registry.publish("comfy-gen-mcp", install_path, models_dir)
         cfg_now = load_local_config()
         external = external_models_dir(comfy_cli_path) if comfy_cli_path else None
         shared_models_dirs = gather_shared_dirs(
             models_dir, external, str(cfg_now.get("extra_models_dir") or ""))
         write_extra_model_paths(install_path, shared_models_dirs)
+        # `sees` = what we consumed this bring-up, so the registry files alone
+        # answer "is every app seeing every other install?"
+        comfy_registry.publish("comfy-gen-mcp", install_path, models_dir, sees=shared_models_dirs)
         log.info("Shared model dirs: %s", shared_models_dirs or "(none)")
 
     # Resolve one pack per tool_name group based on user config

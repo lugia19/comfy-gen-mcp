@@ -30,10 +30,14 @@ def canon_path(path: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(path)))
 
 
-def publish(app_id: str, install_path: str, models_dir: str, root: str | None = None) -> str:
+def publish(app_id: str, install_path: str, models_dir: str, root: str | None = None,
+            sees: list[str] | None = None) -> str:
     """Announce this app's install. Keyed by install path, not app id, so two
     instances of the same app (dev + packaged) don't stomp each other's entry.
-    Returns the entry file path."""
+
+    `sees` records which shared models dirs this app consumed at this bring-up —
+    pure diagnostics, so a glance at the registry files answers "is every app
+    seeing every other install?". Returns the entry file path."""
     root = root or _DEFAULT_ROOT
     os.makedirs(root, exist_ok=True)
     digest = hashlib.sha1(canon_path(install_path).encode("utf-8")).hexdigest()[:8]
@@ -42,6 +46,7 @@ def publish(app_id: str, install_path: str, models_dir: str, root: str | None = 
         "app": app_id,
         "install_path": install_path,
         "models_dir": models_dir,
+        "sees": sees or [],
         "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     with open(entry_path, "w", encoding="utf-8") as f:
