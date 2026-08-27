@@ -207,6 +207,8 @@ def _apply_dark_theme(app: QApplication):
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(127, 127, 127))
     palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(127, 127, 127))
     app.setPalette(palette)
+    # Rich-text tooltips ignore the ToolTipText palette role under Fusion; force it via stylesheet
+    app.setStyleSheet("QToolTip { color: white; background-color: #191919; border: 1px solid #5a5a5a; }")
 
 
 class _NoWheelMixin:
