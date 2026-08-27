@@ -461,35 +461,47 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
     # Anima-family packs (classic + Turbo) share one artist/LoRA config bucket via config_key.
     anima_key = anima_pack.get("config_key", anima_pack["name"]) if anima_pack else "anima"
 
-    # ── Model packs: one radio group per multi-pack tool ──
+    # ── Model packs: one radio column per multi-pack tool, descriptions as ⓘ tooltips ──
     radio_groups: list[tuple[str, list[tuple[dict, QRadioButton]]]] = []
     multi = [(tn, g) for tn, g in groups.items() if len(g) > 1]
     if multi:
         layout.addWidget(QLabel("<b>Model packs</b>"))
+        columns = QHBoxLayout()
+        columns.setSpacing(24)
         for tool_name, group in multi:
             header = tool_name.replace("generate_", "").replace("_", " ").title() + " Model"
-            layout.addWidget(QLabel(f"{header}:"))
+            col = QVBoxLayout()
+            col.addWidget(QLabel(f"{header}:"))
             btn_group = QButtonGroup(parent)
             btn_group.setExclusive(True)
             prev = cfg.get("pack_selections", {}).get(tool_name)
             group_radios: list[tuple[dict, QRadioButton]] = []
-            for pack in group:
+            for pack in sorted(group, key=lambda p: p["display_name"]):
                 total = sum(m["size_bytes"] for m in pack["models"])
                 rb = QRadioButton(f"{pack['display_name']} ({_format_bytes(total)})")
                 if prev == pack["name"]:
                     rb.setChecked(True)
                 elif not prev and pack.get("is_default"):
                     rb.setChecked(True)
-                desc = QLabel(f"  {pack.get('description', '')}")
-                desc.setWordWrap(True)
-                desc.setStyleSheet("color: gray; margin-left: 20px; margin-bottom: 4px;")
                 btn_group.addButton(rb)
-                layout.addWidget(rb)
-                layout.addWidget(desc)
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                row.addWidget(rb)
+                if pack.get("description"):
+                    info = QLabel("ⓘ")
+                    info.setStyleSheet("color: gray;")
+                    # Rich text makes Qt word-wrap the tooltip instead of one long line
+                    info.setToolTip(f"<span>{pack['description']}</span>")
+                    row.addWidget(info)
+                row.addStretch()
+                col.addLayout(row)
                 group_radios.append((pack, rb))
             if not any(rb.isChecked() for _, rb in group_radios):
                 group_radios[0][1].setChecked(True)
             radio_groups.append((tool_name, group_radios))
+            col.addStretch()
+            columns.addLayout(col)
+        layout.addLayout(columns)
         layout.addWidget(_make_hline())
 
     # ── Global scalar fields from the schema ──
