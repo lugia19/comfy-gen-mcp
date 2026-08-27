@@ -110,6 +110,7 @@ def _search_dirs() -> list[str]:
 
 # Per-pack download state: pack_name → True if download in progress
 _downloading: dict[str, bool] = {}
+_missing_at_startup: list[dict] = []  # selected packs whose models weren't on disk at startup()
 _server_window = None  # set in HTTP mode for cross-thread download UI
 _runtime_lock = None  # single-instance file lock handle; held for the process lifetime
 
@@ -253,6 +254,38 @@ def _launch_download(pack: dict):
         log.info("No server window available, downloading silently for %s", pack["name"])
         state = DownloadState()
         download_models(models_dir or "", pack_models, state, extra_search_dirs=shared_models_dirs)
+
+
+def _download_missing_packs_async(missing: list[dict]):
+    """Download the given packs' models in one background thread, one pack at a time.
+
+    Sequential on purpose: packs can share files (e.g. the 9B generation and edit packs
+    list identical models), and concurrent downloads would race on the same .part files.
+    All packs are flagged in _downloading up front so a tool call mid-batch gets the
+    "being downloaded" message instead of starting a competing download.
+    """
+    todo = [p for p in missing if not _downloading.get(p["name"])]
+    if not todo:
+        return
+    for pack in todo:
+        _downloading[pack["name"]] = True
+
+    def _run():
+        try:
+            for pack in todo:
+                try:
+                    # An earlier pack in this batch may have already fetched shared files
+                    if not check_models_present(_search_dirs(), pack):
+                        _launch_download(pack)
+                except Exception:
+                    log.exception("Startup download failed for pack %s", pack["name"])
+                finally:
+                    _downloading[pack["name"]] = False
+        finally:
+            for pack in todo:
+                _downloading[pack["name"]] = False
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _download_in_background(pack: dict):
@@ -553,11 +586,15 @@ def startup() -> tuple[list[dict], dict[str, list[dict]], dict | None, str | Non
         custom_workflow, custom_workflow_prompt_node_title
     )
 
-    # Log model status
+    # Log model status; missing packs are downloaded once the server window is up
+    # (see _store_window in _run_http_server — the download dialog needs the window)
+    _missing_at_startup.clear()
     for pack in packs:
         if models_dir:
             present = check_models_present(_search_dirs(), pack)
-            log.info("Pack '%s': models %s", pack["name"], "OK" if present else "MISSING (will download on use)")
+            log.info("Pack '%s': models %s", pack["name"], "OK" if present else "MISSING (will download at startup)")
+            if not present:
+                _missing_at_startup.append(pack)
         else:
             log.warning("Pack '%s': no models_dir, cannot check models", pack["name"])
 
@@ -891,6 +928,9 @@ def _run_http_server(mcp: FastMCP, args, mcp_path: str) -> None:
     def _store_window(w):
         global _server_window
         _server_window = w
+        # Window exists → the download dialog can show. Fetch anything the selected
+        # packs are missing (e.g. a pack newly picked in Settings before the restart).
+        _download_missing_packs_async(_missing_at_startup)
 
     # Once armed (the shim spawned us — COMFY_MANAGED), the window self-closes when the pings go
     # stale — the shim (Claude Desktop) is gone. A manually-started server is never armed and stays up.
