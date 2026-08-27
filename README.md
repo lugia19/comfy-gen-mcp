@@ -2,7 +2,7 @@
 
 This is just a vibecoded garbo thing I wanted to play around with. It's an MCP server / installable MCPB that wires up ComfyUI with Claude for image generation.
 
-I didn't want to build a generic "do everything" ComfyUI controller — there are already projects for that. This one just generates images. Ships with built-in workflows for **Anima** (anime/illustration), **Flux 2 Klein** and **Z-Image Turbo** (realistic/general-purpose), plus image editing and support for one custom workflow.
+I didn't want to build a generic "do everything" ComfyUI controller — there are already projects for that. This one just generates images. Ships with built-in workflows for **Anima** (anime/illustration), **Flux 2 Klein 4B/9B** and **Z-Image Turbo** (realistic/general-purpose), plus image editing and support for one custom workflow.
 
 Meant to be pretty dumb and plug and play — **ComfyUI itself is installed for you** (via [comfy-cli](https://github.com/Comfy-Org/comfy-cli)) on first run, along with any custom nodes the models need. You don't need an existing ComfyUI install.
 
@@ -14,8 +14,8 @@ Basically nothing to set up by hand:
 - **Required custom nodes** (e.g. [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) for the Flux/Z-Image packs) are installed automatically the first time you use a model that needs them.
 
 What you *do* want:
-- A reasonably capable GPU is strongly recommended (CPU works but is slow). Rough VRAM: Anima ~4 GB, Flux 2 Klein ~6 GB, Z-Image Turbo 8 GB+.
-- Disk space — roughly **6–10 GB per model pack** you choose to download.
+- A reasonably capable GPU is strongly recommended (CPU works but is slow). Rough VRAM: Anima ~4 GB, Flux 2 Klein 4B ~6 GB, Z-Image Turbo 8 GB+, Flux 2 Klein 9B 12 GB+.
+- Disk space — roughly **6–16 GB per model pack** you choose to download.
 
 ## Installation
 
@@ -73,8 +73,8 @@ The standalone server is what you want for remote access. However, the **Claude 
 | Tool | Model pack(s) | Notes |
 |------|---------------|-------|
 | `generate_illustrated_image` | **Anima** | Anime/illustration; booru tags + natural language. ~6 GB, ~4 GB VRAM. Can't render text — use `edit_image` afterward to add it. |
-| `generate_realistic_image` | **Flux 2 Klein** or **Z-Image Turbo** | Realistic/general-purpose. Pick one in Settings — **Z-Image Turbo is the default** (~9 GB, 8 GB+ VRAM); Flux 2 Klein is ~8 GB, ~6 GB VRAM. |
-| `edit_image` | **Flux 2 Klein (Edit)** | img2img editing from a text prompt. Takes a local file path or public URL; optional second reference image. |
+| `generate_realistic_image` | **Flux 2 Klein 4B**, **Flux 2 Klein 9B**, or **Z-Image Turbo** | Realistic/general-purpose. Pick one in Settings — **Z-Image Turbo is the default** (~9 GB, 8 GB+ VRAM); Flux 2 Klein 4B is ~8 GB, ~6 GB VRAM; Flux 2 Klein 9B is ~16 GB, 12 GB+ VRAM (highest quality). |
+| `edit_image` | **Flux 2 Klein 4B (Edit)** or **Flux 2 Klein 9B (Edit)** | img2img editing from a text prompt. Pick the model in Settings, independently of the realistic model — **4B is the default**. Takes a local file path or public URL; optional second reference image. |
 | `generate_custom_image` | *(your workflow)* | Only appears if you set a custom workflow path in Settings. |
 | `fetch_result` | — | Retrieves a generation that's still running (when a tool returns a `request_token`). |
 
@@ -85,7 +85,7 @@ Packs you don't download up front are fetched automatically the first time you u
 Everything is managed in the **Settings panel** — click **Settings** in the Comfy-Gen-MCP server window (look for the tray icon), or in Claude Desktop go to Settings > Extensions > Configure for comfyui-image-gen.
 
 Settings include:
-- **Model selection** — which pack backs each tool: `generate_realistic_image` (Flux 2 Klein vs Z-Image Turbo) and `generate_illustrated_image` (Anima vs Anima Turbo)
+- **Model selection** — which pack backs each tool: `generate_realistic_image` (Flux 2 Klein 4B vs 9B vs Z-Image Turbo), `generate_illustrated_image` (Anima vs Anima Turbo), and `edit_image` (Flux 2 Klein 4B vs 9B)
 - **Anima artist styles** — @artist tags blended into Anima prompts (browse them at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html)); shared by both Anima and Anima Turbo
 - **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Anima-family only for now; shared by both Anima and Anima Turbo.
 - **ComfyUI URL** — default `http://127.0.0.1:8188`. If that port is taken, the managed ComfyUI automatically falls back to a free port. Only change this if you want to point at your *own* already-running ComfyUI instead of the managed one.

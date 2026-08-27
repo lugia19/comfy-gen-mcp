@@ -7,7 +7,6 @@ Supports two modes:
 """
 
 import argparse
-import json
 import logging
 import os
 import secrets
@@ -610,13 +609,9 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             )
         return await wait_for_job(_jobs[request_token], _get_output_dir())
 
-    # Edit image tool
-    _edit_pack_path = os.path.join(MODEL_PACKS_DIR, "flux2klein_edit.json")
-    _edit_pack = None
-    if os.path.isfile(_edit_pack_path):
-        with open(_edit_pack_path, encoding="utf-8") as f:
-            _edit_pack = json.load(f)
-            _edit_pack["_source_path"] = os.path.abspath(_edit_pack_path)
+    # Edit image tool — uses whichever edit_image pack the user selected
+    # (resolve_pack_selections already picked one per tool_name group)
+    _edit_pack = next((p for p in packs if p["tool_name"] == "edit_image"), None)
 
     @mcp.tool(name="edit_image", description=EDIT_DESC)
     async def edit_image(prompt: str, image_path: str, second_image_path: str = "") -> CallToolResult:
