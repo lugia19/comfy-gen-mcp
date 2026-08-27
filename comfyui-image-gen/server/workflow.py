@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import random
+import re
 
 log = logging.getLogger("comfy-mcp")
 
@@ -17,12 +18,28 @@ ASPECT_RATIOS: dict[str, tuple[int, int]] = {
 }
 
 
+# "1024x768"-style aspect override; deliberately absent from the tool schemas and
+# descriptions — it's for scripted HTTP callers, not the LLM.
+_WH_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
+
+
 def calc_dimensions(aspect: str, max_pixels: int) -> tuple[int, int]:
     """Compute width and height from an aspect ratio name and pixel budget.
 
+    Besides the named ratios, accepts a "WxH" string (e.g. "1024x768"), treated as a
+    custom ratio and scaled to the same pixel budget — the numbers set the shape, not
+    the output size. Anything unrecognized falls back to square.
+
     Rounds to the nearest multiple of 64 (ComfyUI latent alignment).
     """
-    w_ratio, h_ratio = ASPECT_RATIOS.get(aspect, (1, 1))
+    ratio = ASPECT_RATIOS.get(aspect)
+    if ratio is None:
+        m = _WH_RE.match(aspect or "")
+        if m and int(m.group(1)) > 0 and int(m.group(2)) > 0:
+            ratio = (int(m.group(1)), int(m.group(2)))
+        else:
+            ratio = (1, 1)
+    w_ratio, h_ratio = ratio
     # scale = sqrt(max_pixels / (w_ratio * h_ratio))
     scale = math.sqrt(max_pixels / (w_ratio * h_ratio))
     w = round(w_ratio * scale / 64) * 64
