@@ -490,8 +490,10 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 row.setSpacing(6)
                 row.addWidget(rb)
                 if pack.get("description"):
-                    info = QLabel("ⓘ")
-                    info.setStyleSheet("color: gray;")
+                    # Gray via rich text, NOT a stylesheet: a `color:` stylesheet rewrites the
+                    # widget's whole palette (ToolTipText included), and its tooltip inherits
+                    # that palette — gray tooltip text no matter what the app QToolTip rule says.
+                    info = QLabel('<span style="color: gray;">ⓘ</span>')
                     # Rich text makes Qt word-wrap the tooltip instead of one long line
                     info.setToolTip(f"<span>{pack['description']}</span>")
                     row.addWidget(info)
@@ -1173,7 +1175,7 @@ class ServerWindow(QMainWindow):
         layout.addWidget(_make_hline())
         troubleshoot_row = QHBoxLayout()
         self._comfyui_status = QLabel("ComfyUI: starting...")
-        self._comfyui_status.setStyleSheet("color: orange;")
+        self._comfyui_status.setStyleSheet("QLabel { color: orange; }")
         troubleshoot_label = QLabel("Having problems? Try reinstalling ComfyUI.")
         troubleshoot_label.setStyleSheet("color: gray;")
         reinstall_btn = QPushButton("Reinstall")
@@ -1338,12 +1340,14 @@ class ServerWindow(QMainWindow):
         state, tooltip = self._comfyui_state
         if state == "ready":
             self._comfyui_status.setText("ComfyUI: ready")
-            self._comfyui_status.setStyleSheet("color: #4CAF50;")
+            # Scoped to QLabel: a bare `color:` declaration rewrites the palette's
+            # ToolTipText too, turning this label's tooltip text that color.
+            self._comfyui_status.setStyleSheet("QLabel { color: #4CAF50; }")
             self._comfyui_status.setToolTip("")
             self._comfyui_failed_notified = False
         elif state == "failed":
             self._comfyui_status.setText("ComfyUI: failed to start")
-            self._comfyui_status.setStyleSheet("color: #f44336;")
+            self._comfyui_status.setStyleSheet("QLabel { color: #f44336; }")
             self._comfyui_status.setToolTip(tooltip)
             # Surface it once: the window is usually hidden in the tray, so nudge + raise.
             if not self._comfyui_failed_notified:
@@ -1356,7 +1360,7 @@ class ServerWindow(QMainWindow):
                 self._show_window()
         else:
             self._comfyui_status.setText("ComfyUI: starting...")
-            self._comfyui_status.setStyleSheet("color: orange;")
+            self._comfyui_status.setStyleSheet("QLabel { color: orange; }")
             self._comfyui_status.setToolTip("")
 
     def _open_settings(self):
