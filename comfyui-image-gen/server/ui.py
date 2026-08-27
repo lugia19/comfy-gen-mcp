@@ -857,10 +857,10 @@ def run_settings_dialog(managed: bool = False):
 # ── 2. First-Time Setup Wizard ───────────────────────────────────────
 
 def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_process: bool = False):
-    """First-run wizard: ComfyUI install → Settings → download."""
+    """First-run wizard: ComfyUI install → Settings. Model downloads are NOT part of the
+    wizard — startup() resumes when it closes and fetches whatever the selected packs are
+    missing once the server window is up (see main._download_missing_packs_async)."""
     log.info("Opening first-time setup (%d packs, %d groups)", len(packs), len(groups))
-    from server.downloader import DownloadState, download_models
-    from server.model_pack import resolve_pack_selections
 
     app = _get_app()
     comfy_cli = find_comfy_cli()
@@ -941,96 +941,18 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
     def on_settings_continue():
         collect_holder["collect"]()  # persist all settings (incl. pack_selections)
-        # Download one resolved pack per group (lazy download covers anything skipped here).
-        selected = resolve_pack_selections(groups)
-        _start_downloads(selected)
+        # Mark setup complete now — downloads are no longer the wizard's job. startup()
+        # resumes after accept() and fetches the selected packs' missing models (with the
+        # unclosable progress dialog) once the server window is up.
+        cfg = load_local_config()
+        cfg["setup_version"] = EXTENSION_VERSION
+        save_local_config(cfg)
+        wizard.accept()
 
     settings_continue_btn.clicked.connect(on_settings_continue)
     spl.addWidget(settings_continue_btn)
     stack_layout.addWidget(settings_page)
     pages.append(settings_page)
-
-    # ── Page 2: Download ──
-    dl_page = QWidget()
-    dll = QVBoxLayout(dl_page)
-    dl_title = QLabel("<h3>Downloading models...</h3>")
-    dll.addWidget(dl_title)
-    dl_file_label = QLabel("Preparing...")
-    dll.addWidget(dl_file_label)
-    dl_progress = QProgressBar()
-    dll.addWidget(dl_progress)
-    dl_detail_label = QLabel("")
-    dl_detail_label.setStyleSheet("color: gray;")
-    dll.addWidget(dl_detail_label)
-    dl_error_label = QLabel("")
-    dl_error_label.setStyleSheet("color: red;")
-    dl_error_label.setWordWrap(True)
-    dll.addWidget(dl_error_label)
-    dl_retry_btn = QPushButton("Retry")
-    dl_retry_btn.setEnabled(False)
-    dll.addWidget(dl_retry_btn)
-    dll.addStretch()
-    stack_layout.addWidget(dl_page)
-    pages.append(dl_page)
-
-    dl_state = DownloadState()
-    download_thread_holder = []
-
-    def _start_downloads(selected):
-        show_page(2)
-        all_models = []
-        for pack in selected:
-            for m in pack["models"]:
-                if not any(e["filename"] == m["filename"] and e["subfolder"] == m["subfolder"] for e in all_models):
-                    all_models.append(m)
-        log.info("Installing %d pack(s), %d unique model(s)", len(selected), len(all_models))
-
-        def do_download():
-            if download_thread_holder and download_thread_holder[0].is_alive():
-                return
-            dl_state.update(status="idle", error=None)
-            dl_retry_btn.setEnabled(False)
-            dl_error_label.setText("")
-            t = threading.Thread(target=download_models, args=(state["models_dir"], all_models, dl_state),
-                                 kwargs={"extra_search_dirs": all_search_dirs(state["models_dir"])[1:]}, daemon=True)
-            download_thread_holder.clear()
-            download_thread_holder.append(t)
-            t.start()
-
-        dl_retry_btn.clicked.disconnect() if dl_retry_btn.receivers(dl_retry_btn.clicked) > 0 else None
-        dl_retry_btn.clicked.connect(do_download)
-        do_download()
-
-        def poll():
-            snap = dl_state.snapshot()
-            if snap["status"] == "downloading":
-                idx = snap["file_index"]
-                count = snap["file_count"]
-                fname = snap["current_file"]
-                cur = snap["current_bytes"]
-                total = snap["total_bytes"]
-                overall = snap["overall_bytes"]
-                overall_total = snap["overall_total"]
-                dl_file_label.setText(f"File {idx+1}/{count}: {fname} ({_format_bytes(cur)} / {_format_bytes(total)})")
-                if overall_total > 0:
-                    dl_progress.setValue(int(overall / overall_total * 100))
-                    dl_detail_label.setText(f"Overall: {_format_bytes(overall)} / {_format_bytes(overall_total)}")
-            elif snap["status"] == "complete":
-                dl_file_label.setText("All models downloaded!")
-                dl_progress.setValue(100)
-                dl_detail_label.setText("Setup complete.")
-                cfg = load_local_config()
-                cfg["setup_version"] = EXTENSION_VERSION
-                save_local_config(cfg)
-                QTimer.singleShot(1500, wizard.accept)
-                return
-            elif snap["status"] == "error":
-                dl_error_label.setText(snap["error"])
-                dl_retry_btn.setEnabled(True)
-
-        poll_timer = QTimer(wizard)
-        poll_timer.timeout.connect(poll)
-        poll_timer.start(200)
 
     # ── Show initial page ──
     if state["models_dir"]:
@@ -1044,6 +966,22 @@ def run_first_time_setup(packs: list[dict], groups: dict[str, list[dict]], in_pr
 
 
 # ── 3. Download UI ───────────────────────────────────────────────────
+
+class _NoCloseDialog(QDialog):
+    """Dialog that ignores user close attempts (X, Esc, Alt+F4) while ``closable`` is
+    False. accept()/done() still end exec() — they hide the dialog without a close event."""
+    closable = False
+
+    def reject(self):  # Esc
+        if self.closable:
+            super().reject()
+
+    def closeEvent(self, event):  # X / Alt+F4
+        if self.closable:
+            super().closeEvent(event)
+        else:
+            event.ignore()
+
 
 def run_download_ui(models_dir: str, models: list[dict], title: str):
     """Show model download progress for a single pack."""
@@ -1064,7 +1002,9 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
         return
 
     app = _get_app()
-    dialog = QDialog()
+    # Unclosable while downloading — closing wouldn't stop the download thread, it would
+    # just hide the progress. Becomes closable if the download errors (see poll()).
+    dialog = _NoCloseDialog()
     dialog.setWindowTitle("Comfy-Gen-MCP — Setup")
     dialog.setMinimumWidth(520)
 
@@ -1093,6 +1033,7 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
         if download_thread_holder and download_thread_holder[0].is_alive():
             return
         dl_state.update(status="idle", error=None)
+        dialog.closable = False
         retry_btn.setEnabled(False)
         error_label.setText("")
         t = threading.Thread(target=download_models, args=(models_dir, models, dl_state),
@@ -1121,13 +1062,14 @@ def run_download_ui(models_dir: str, models: list[dict], title: str):
         elif snap["status"] == "error":
             error_label.setText(snap["error"])
             retry_btn.setEnabled(True)
+            dialog.closable = True  # escape hatch: don't trap the user on a failing download
 
     timer = QTimer(dialog)
     timer.timeout.connect(poll)
     timer.start(200)
 
     if dialog.exec() != QDialog.DialogCode.Accepted:
-        log.info("Download cancelled by user")
+        log.info("Download dialog closed after error")
 
 
 # ── URL Window (with tray icon) ──────────────────────────────────────
