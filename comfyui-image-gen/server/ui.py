@@ -465,6 +465,11 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
 
     # ── Model packs: one radio column per multi-pack tool, descriptions as ⓘ tooltips ──
     radio_groups: list[tuple[str, list[tuple[dict, QRadioButton]]]] = []
+    # Packs declaring max_pixels_limit get a resolution spin box in their column. One box
+    # serves the whole column, so remember every pack's value and swap on selection change.
+    mp_values: dict[str, float] = {}
+    mp_shown: dict[str, str] = {}          # column tool_name -> pack name currently in the box
+    mp_boxes: dict[str, object] = {}       # column tool_name -> spin box
     multi = [(tn, g) for tn, g in groups.items() if len(g) > 1]
     if multi:
         layout.addWidget(QLabel("<b>Model packs</b>"))
@@ -503,6 +508,58 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             if not any(rb.isChecked() for _, rb in group_radios):
                 group_radios[0][1].setChecked(True)
             radio_groups.append((tool_name, group_radios))
+
+            # Resolution budget, for columns whose packs opt in via max_pixels_limit.
+            # Built *after* the fallback above: that setChecked() would otherwise fire the
+            # toggled handler before mp_shown is seeded, storing the value on the wrong pack.
+            if any(p.get("max_pixels_limit") for p, _ in group_radios):
+                for p, _ in group_radios:
+                    bkey = p.get("config_key", p["name"])
+                    saved = cfg.get("pack_settings", {}).get(bkey, {}).get("max_pixels")
+                    valid = isinstance(saved, int) and not isinstance(saved, bool) and saved > 0
+                    px = saved if valid else p.get("max_pixels", 1_048_576)
+                    mp_values[bkey] = min(px, p.get("max_pixels_limit", px)) / 1_048_576
+                shown = next(p for p, rb in group_radios if rb.isChecked())
+                mp_shown[tool_name] = shown.get("config_key", shown["name"])
+
+                mp_row = QHBoxLayout()
+                mp_row.setSpacing(6)
+                mp_label = QLabel("Max resolution:")
+                mp_label.setToolTip(
+                    "<span>Pixel budget for generated images. Higher is sharper but slower "
+                    "&mdash; above ~2 MP a request often exceeds the response window and has to "
+                    "be fetched a second time. Remembered per model. Takes effect after "
+                    "restart.</span>"
+                )
+                mp_row.addWidget(mp_label)
+                mp_spin = _NoWheelDoubleSpinBox()
+                mp_spin.setDecimals(2)
+                mp_spin.setSingleStep(0.25)
+                mp_spin.setSuffix(" MP")
+                mp_spin.setRange(0.5, shown.get("max_pixels_limit", 4) / 1_048_576)
+                mp_spin.setValue(mp_values[shown["name"]])
+                mp_row.addWidget(mp_spin)
+                mp_row.addStretch()
+                col.addLayout(mp_row)
+                mp_boxes[tool_name] = mp_spin
+
+                def _on_pack_toggled(checked, tn=tool_name, pack=None, spin=mp_spin):
+                    if not checked:
+                        return
+                    mp_values[mp_shown[tn]] = spin.value()   # stash the outgoing pack's value
+                    bkey = pack.get("config_key", pack["name"])
+                    mp_shown[tn] = bkey
+                    # setRange before setValue, or Qt clamps to the previous pack's range.
+                    spin.setRange(0.5, pack.get("max_pixels_limit", 4) / 1_048_576)
+                    spin.setValue(mp_values[bkey])
+
+                # Bind the handler itself as a default arg: it is redefined once per column, and
+                # a bare name would resolve to the last column's closure at signal time.
+                for p, rb in group_radios:
+                    rb.toggled.connect(
+                        lambda checked, pk=p, fn=_on_pack_toggled: fn(checked, pack=pk)
+                    )
+
             col.addStretch()
             columns.addLayout(col)
         layout.addLayout(columns)
@@ -702,6 +759,11 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 c[key] = int(w.value())
             elif ftype == "bool":
                 c[key] = bool(w.isChecked())
+        for tool_name, spin in mp_boxes.items():
+            mp_values[mp_shown[tool_name]] = spin.value()   # flush the visible box
+        for pack_name, mp in mp_values.items():
+            bucket = c.setdefault("pack_settings", {}).setdefault(pack_name, {})
+            bucket["max_pixels"] = int(round(mp * 1_048_576))
         if artist_entry is not None:
             val = artist_entry.text().strip()
             if val:

@@ -433,14 +433,48 @@ def _apply_loras_to_pack(pack: dict) -> None:
             log.error("Pack '%s': failed to inject LoRAs (%s); serving pack unmodified", pack["name"], e)
 
 
+def _apply_max_pixels_to_pack(pack: dict) -> None:
+    """Apply a user-chosen resolution budget from local_config.json, if one is set.
+
+    Only packs that declare ``max_pixels_limit`` (the model's hard ceiling) expose this in the
+    Settings panel; for anything else there is nothing to read and this is a no-op. The stored
+    value is a pixel count, same unit as the pack JSON's ``max_pixels``, so it is a straight
+    assignment -- megapixels exist only in the UI.
+
+    Mutates pack['max_pixels'], which both the generation path (comfy_job -> calc_dimensions)
+    and the edit path read off the live pack dict. Bad values are logged and ignored rather
+    than failing startup.
+    """
+    limit = pack.get("max_pixels_limit")
+    if not limit:
+        return
+    config_key = pack.get("config_key", pack["name"])
+    value = load_local_config().get("pack_settings", {}).get(config_key, {}).get("max_pixels")
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        log.warning("Pack '%s': invalid max_pixels %r in pack_settings, keeping default %d",
+                    pack["name"], value, pack.get("max_pixels", 0))
+        return
+    if value > limit:
+        log.warning("Pack '%s': configured max_pixels %d exceeds the model's limit %d, clamping",
+                    pack["name"], value, limit)
+        value = limit
+    if value != pack.get("max_pixels"):
+        log.info("Pack '%s': max_pixels %s -> %d (%.2f MP) from user settings",
+                 pack["name"], pack.get("max_pixels"), value, value / 1_048_576)
+    pack["max_pixels"] = value
+
+
 def _apply_pack_customizations(packs: list[dict], groups: dict[str, list[dict]]) -> None:
     """Finalize each resolved pack's tool description (group override + artist-list
-    substitution, via the shared resolve_tool_description) and inject LoRAs (mutates packs in
-    place)."""
+    substitution, via the shared resolve_tool_description), inject LoRAs, and apply any
+    user-chosen resolution budget (mutates packs in place)."""
     for pack in packs:
         pack["tool_description"] = resolve_tool_description(pack, groups, env_reader=_env)
         log.info("Pack '%s' tool description finalized", pack["name"])
         _apply_loras_to_pack(pack)
+        _apply_max_pixels_to_pack(pack)
 
 
 def _load_custom_pack(custom_workflow: str | None,
