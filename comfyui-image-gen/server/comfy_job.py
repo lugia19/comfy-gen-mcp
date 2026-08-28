@@ -12,7 +12,7 @@ import time
 import httpx
 from PIL import Image
 
-from server.config import JPEG_QUALITY, MAX_IMAGE_SIZE
+from server.config import JPEG_QUALITY
 from server.workflow import build_prompt
 
 log = logging.getLogger("comfy-mcp")
@@ -233,16 +233,14 @@ class ComfyJob:
 
     @staticmethod
     def process_image(img_bytes: bytes) -> str:
-        """Convert raw image bytes → resized JPEG → base64 string."""
+        """Convert raw image bytes to a base64 JPEG, at native resolution.
+
+        No downscaling: the API resizes anything past its vision limits server-side and
+        bills the post-resize size, so shrinking here would save no tokens and would only
+        lose detail on everything below those limits.
+        """
         img = Image.open(io.BytesIO(img_bytes))
         log.info("Raw image size: %dx%d", img.size[0], img.size[1])
-        max_total_pixels = MAX_IMAGE_SIZE * MAX_IMAGE_SIZE
-        if img.size[0] * img.size[1] > max_total_pixels:
-            scale = (max_total_pixels / (img.size[0] * img.size[1])) ** 0.5
-            new_w = int(img.size[0] * scale)
-            new_h = int(img.size[1] * scale)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            log.info("Resized to: %dx%d", img.size[0], img.size[1])
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
         b64 = base64.b64encode(buf.getvalue()).decode()

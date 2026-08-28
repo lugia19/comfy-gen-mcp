@@ -41,6 +41,10 @@
   "image_nodes": [
     "154"
   ],
+  "max_pixels": 4194304,
+  "edit_scale_nodes": [
+    "163"
+  ],
   "workflow": {
     "154": {
       "inputs": {
@@ -143,7 +147,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": [
           "154",
           0
@@ -321,6 +325,10 @@
     "173",
     "172"
   ],
+  "edit_scale_nodes_multi": [
+    "159",
+    "160"
+  ],
   "workflow_multi": {
     "154": {
       "inputs": {
@@ -417,7 +425,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": [
           "173",
           0
@@ -432,7 +440,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": [
           "172",
           0

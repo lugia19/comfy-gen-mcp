@@ -8,7 +8,6 @@ EXTENSION_VERSION = "1.0.7"
 COMFYUI_DEFAULT_URL = "http://127.0.0.1:8188"
 COMFYUI_DEFAULT_PORT = 8188
 
-MAX_IMAGE_SIZE = 1024
 JPEG_QUALITY = 85
 
 _BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

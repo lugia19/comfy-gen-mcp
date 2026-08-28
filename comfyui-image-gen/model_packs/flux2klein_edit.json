@@ -35,6 +35,8 @@
   "prompt_node_id": "166",
   "seed_nodes": [{"node_id": "158", "field": "noise_seed"}],
   "image_nodes": ["154"],
+  "max_pixels": 4194304,
+  "edit_scale_nodes": ["163"],
   "workflow": {
     "154": {
       "inputs": { "image": "" },
@@ -85,7 +87,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": ["154", 0]
       },
       "class_type": "ImageScaleToTotalPixels",
@@ -165,6 +167,7 @@
   "prompt_node_id_multi": "170",
   "seed_nodes_multi": [{"node_id": "166", "field": "noise_seed"}],
   "image_nodes_multi": ["173", "172"],
+  "edit_scale_nodes_multi": ["159", "160"],
   "workflow_multi": {
     "154": {
       "inputs": { "sampler_name": "euler" },
@@ -210,7 +213,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": ["173", 0]
       },
       "class_type": "ImageScaleToTotalPixels",
@@ -220,7 +223,7 @@
       "inputs": {
         "upscale_method": "nearest-exact",
         "megapixels": 1,
-        "resolution_steps": 1,
+        "resolution_steps": 16,
         "image": ["172", 0]
       },
       "class_type": "ImageScaleToTotalPixels",

@@ -687,6 +687,19 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         use_multi = bool(second_image_path)
         log.info("edit_image called, multi=%s, path=%s, prompt=%r", use_multi, image_path, prompt[:100])
 
+        # Measure the inputs now — URL-resolved temps are deleted right after upload below.
+        # Sizes drive the graph's scale nodes (see "Size the edit to the input" further down).
+        source_paths = [image_path, second_image_path] if use_multi else [image_path]
+        source_sizes: list[tuple[int, int] | None] = []
+        from PIL import Image
+        for p in source_paths:
+            try:
+                with Image.open(p) as im:
+                    source_sizes.append(im.size)
+            except Exception as e:
+                log.warning("Could not read dimensions of %s (%s); falling back to the pack budget", p, e)
+                source_sizes.append(None)
+
         msg = _check_and_download_models(_edit_pack)
         if msg:
             return CallToolResult(content=[TextContent(type="text", text=msg)])
@@ -733,6 +746,24 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
         # Inject image filenames into LoadImage nodes
         for node_id, filename in zip(image_nodes, uploaded_names):
             wf[node_id]["inputs"]["image"] = filename
+
+        # Size the edit to the input. The graph's ImageScaleToTotalPixels nodes normalize to a
+        # fixed megapixel count in *both* directions, so left alone they crush a large panel and
+        # upscale a small one. Setting each node to min(source pixels, pack budget) turns it into
+        # a cap: inputs at or under the budget pass through at their native size, oversized ones
+        # are still reined in. Output dimensions follow the first image (nodes downstream read
+        # its size), so the pass is resolution-neutral for anything within budget.
+        scale_key = "edit_scale_nodes_multi" if use_multi else "edit_scale_nodes"
+        budget = _edit_pack.get("max_pixels", 1_048_576)
+        for node_id, size in zip(_edit_pack.get(scale_key, []), source_sizes):
+            if node_id not in wf:
+                continue
+            pixels = size[0] * size[1] if size else budget
+            # ImageScaleToTotalPixels accepts 0.01-16.0 megapixels, where 1.0 == 1024*1024.
+            megapixels = min(max(round(min(pixels, budget) / 1_048_576, 4), 0.01), 16.0)
+            wf[node_id]["inputs"]["megapixels"] = megapixels
+            log.info("Edit scale node %s: source %s, budget %d px -> %.4f MP",
+                     node_id, f"{size[0]}x{size[1]}" if size else "unknown", budget, megapixels)
 
         # Build a synthetic pack for ComfyJob — prompt and seeds are injected by build_prompt()
         edit_job_pack = {
