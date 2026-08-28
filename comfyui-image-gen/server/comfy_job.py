@@ -23,12 +23,16 @@ RESPONSE_TIMEOUT = 55  # seconds — must be under Claude's connector/tool timeo
 class ComfyJob:
     """Manages a single image generation request to ComfyUI."""
 
-    def __init__(self, prompt_text: str, pack: dict, aspect_ratio: str, comfyui_url: str):
+    def __init__(self, prompt_text: str, pack: dict, aspect_ratio: str, comfyui_url: str,
+                 lossless: bool = False):
         self.token = secrets.token_urlsafe(16)
         self.prompt_text = prompt_text
         self.pack = pack
         self.aspect_ratio = aspect_ratio
         self.comfyui_url = comfyui_url
+        # Return a PNG rather than the default JPEG. Lives on the job so the fetch_result
+        # retry path honours it too — a timed-out generation still comes back lossless.
+        self.lossless = lossless
 
         self.status = "queued"  # "queued" | "running" | "done" | "error"
         self.prompt_id: str | None = None
@@ -232,8 +236,12 @@ class ComfyJob:
         return "Generating..."
 
     @staticmethod
-    def process_image(img_bytes: bytes) -> str:
-        """Convert raw image bytes to a base64 JPEG, at native resolution.
+    def process_image(img_bytes: bytes, lossless: bool = False) -> tuple[str, str]:
+        """Encode raw image bytes as base64, at native resolution. Returns (base64, mime type).
+
+        Defaults to JPEG to keep the payload small. ``lossless`` switches to PNG and keeps
+        the image's own mode, so an alpha channel survives; only modes PNG cannot hold are
+        flattened to RGB.
 
         No downscaling: the API resizes anything past its vision limits server-side and
         bills the post-resize size, so shrinking here would save no tokens and would only
@@ -242,10 +250,18 @@ class ComfyJob:
         img = Image.open(io.BytesIO(img_bytes))
         log.info("Raw image size: %dx%d", img.size[0], img.size[1])
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
+        if lossless:
+            out = img if img.mode in ("RGB", "RGBA", "L", "LA", "P") else img.convert("RGB")
+            out.save(buf, format="PNG")
+            mime = "image/png"
+        else:
+            img.convert("RGB").save(buf, format="JPEG", quality=JPEG_QUALITY)
+            mime = "image/jpeg"
         b64 = base64.b64encode(buf.getvalue()).decode()
-        log.info("JPEG encoded, %d bytes base64", len(b64))
-        return b64
+        # Codec + size: the cheapest confirmation the flag took effect, and the first thing
+        # to check if a large PNG is rejected as an oversized tool result.
+        log.info("%s encoded, %d bytes base64", "PNG" if lossless else "JPEG", len(b64))
+        return b64, mime
 
     @staticmethod
     def cleanup_old(jobs: dict[str, 'ComfyJob'], max_age: int = 600):
@@ -264,8 +280,8 @@ async def wait_for_job(job: ComfyJob, output_dir: str | None = None) -> 'CallToo
     start = time.time()
     while time.time() - start < RESPONSE_TIMEOUT:
         if job.status == "done":
-            b64 = ComfyJob.process_image(job.result)
-            content = [ImageContent(type="image", data=b64, mimeType="image/jpeg")]
+            b64, mime = ComfyJob.process_image(job.result, lossless=job.lossless)
+            content = [ImageContent(type="image", data=b64, mimeType=mime)]
             if output_dir and job.output_filename:
                 import os
                 full_path = os.path.join(output_dir, job.output_subfolder, job.output_filename)

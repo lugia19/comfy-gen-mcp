@@ -55,7 +55,7 @@ from server.config import (
 from server.comfy_job import ComfyJob, wait_for_job
 from server.model_pack import check_models_present, group_packs_by_tool, load_all_packs, resolve_pack_selections
 from server.tool_specs import CUSTOM_DESC, EDIT_DESC, FETCH_DESC, resolve_tool_description
-from server.workflow import inject_loras, load_custom_workflow
+from server.workflow import inject_loras, load_custom_workflow, split_lossless
 
 log = logging.getLogger("comfy-mcp")
 # CRITICAL: logs must go to stderr — stdout is the MCP stdio transport channel.
@@ -369,10 +369,17 @@ def _ensure_comfyui() -> str | None:
     return None
 
 
-async def _run_generation(prompt: str, pack: dict, aspect_ratio: str) -> CallToolResult:
-    """Create, start, store, and await a ComfyJob for the given pack."""
+async def _run_generation(prompt: str, pack: dict, aspect_ratio: str,
+                          lossless: bool = False) -> CallToolResult:
+    """Create, start, store, and await a ComfyJob for the given pack.
+
+    Parses the undocumented ':lossless' aspect suffix here rather than in each handler:
+    the handler signatures are exactly what FastMCP publishes as the tool schemas, so
+    keeping them untouched is what keeps the flag away from the model.
+    """
+    aspect_ratio, from_aspect = split_lossless(aspect_ratio)
     ComfyJob.cleanup_old(_jobs)
-    job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url)
+    job = ComfyJob(prompt, pack, aspect_ratio, comfyui_url, lossless=lossless or from_aspect)
     job.start()
     _jobs[job.token] = job
     return await wait_for_job(job, _get_output_dir())
@@ -687,6 +694,14 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
 
     @mcp.tool(name="edit_image", description=EDIT_DESC)
     async def edit_image(prompt: str, image_path: str, second_image_path: str = "") -> CallToolResult:
+        # Undocumented ':lossless' marker on either path (see workflow.split_lossless) — strip
+        # it before anything treats these as real paths or URLs. Accepted on either one so a
+        # caller who tags the second image doesn't get a silent no-op.
+        image_path, lossless = split_lossless(image_path)
+        if second_image_path:
+            second_image_path, second_lossless = split_lossless(second_image_path)
+            lossless = lossless or second_lossless
+
         # Resolve URLs to local temp files
         temp_files = []
         try:
@@ -811,7 +826,7 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             "seed_nodes": seed_nodes,
         }
 
-        return await _run_generation(prompt, edit_job_pack, "square")
+        return await _run_generation(prompt, edit_job_pack, "square", lossless=lossless)
 
     # Per-pack tools
     def _make_handler(tool_name: str):

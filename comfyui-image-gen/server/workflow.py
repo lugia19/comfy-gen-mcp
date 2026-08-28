@@ -23,6 +23,27 @@ ASPECT_RATIOS: dict[str, tuple[int, int]] = {
 _WH_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
 
 
+# ":lossless" suffix on an existing string arg (aspect_ratio, or edit_image's image paths),
+# asking for a PNG response instead of the default JPEG. Smuggled rather than added as a real
+# parameter because FastMCP derives each tool's inputSchema from its handler signature, so a
+# parameter would be advertised to the model. Same audience as the "WxH" ratio above: scripted
+# HTTP callers, not the LLM.
+_LOSSLESS_SUFFIX = ":lossless"
+
+
+def split_lossless(value: str) -> tuple[str, bool]:
+    """Strip a trailing ':lossless' marker, returning (remainder, flag).
+
+    Case-insensitive. Returns the value untouched when the marker is absent, so every
+    existing caller is unaffected. Only a *trailing* match is stripped, which leaves
+    Windows drive colons (``C:/Users/...``) intact.
+    """
+    s = (value or "").strip()
+    if s.lower().endswith(_LOSSLESS_SUFFIX):
+        return s[: -len(_LOSSLESS_SUFFIX)].strip(), True
+    return value, False
+
+
 def calc_dimensions(aspect: str, max_pixels: int) -> tuple[int, int]:
     """Compute width and height from an aspect ratio name and pixel budget.
 
