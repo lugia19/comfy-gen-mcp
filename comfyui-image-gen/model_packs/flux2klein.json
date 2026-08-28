@@ -123,7 +123,7 @@
     "width": [{"node_id": "101", "field": "value"}],
     "height": [{"node_id": "102", "field": "value"}]
   },
-  "max_pixels": 1048576,
+  "max_pixels": 2359296,
   "required_nodes": {
     "UnetLoaderGGUF": "ComfyUI-GGUF",
     "CLIPLoaderGGUF": "ComfyUI-GGUF"
