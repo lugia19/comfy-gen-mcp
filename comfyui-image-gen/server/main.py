@@ -42,6 +42,7 @@ from server.comfyui import (
     write_extra_model_paths,
 )
 from server.config import (
+    EDIT_BUDGET_TOLERANCE,
     COMFYUI_DEFAULT_URL,
     EXTENSION_VERSION,
     MODEL_PACKS_DIR,
@@ -759,8 +760,11 @@ def register_tools(mcp: FastMCP, packs: list[dict], custom_pack: dict | None, cu
             if node_id not in wf:
                 continue
             pixels = size[0] * size[1] if size else budget
+            # Pass through anything within the tolerance so a pack's own 64-rounded output
+            # survives untouched; genuinely oversized inputs still clamp to the budget itself.
+            target = pixels if pixels <= budget * EDIT_BUDGET_TOLERANCE else budget
             # ImageScaleToTotalPixels accepts 0.01-16.0 megapixels, where 1.0 == 1024*1024.
-            megapixels = min(max(round(min(pixels, budget) / 1_048_576, 4), 0.01), 16.0)
+            megapixels = min(max(round(target / 1_048_576, 4), 0.01), 16.0)
             wf[node_id]["inputs"]["megapixels"] = megapixels
             log.info("Edit scale node %s: source %s, budget %d px -> %.4f MP",
                      node_id, f"{size[0]}x{size[1]}" if size else "unknown", budget, megapixels)

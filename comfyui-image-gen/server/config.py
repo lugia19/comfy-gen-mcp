@@ -10,6 +10,12 @@ COMFYUI_DEFAULT_PORT = 8188
 
 JPEG_QUALITY = 85
 
+# calc_dimensions rounds to multiples of 64, so a pack's own output can land a couple of
+# percent above its declared max_pixels (e.g. Klein portrait at a 4 MP budget is 4,243,456).
+# The edit path tolerates that much overshoot rather than shaving 16px off every edit of an
+# image this extension just generated; anything past it is still clamped to the budget.
+EDIT_BUDGET_TOLERANCE = 1.05
+
 _BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _EXT_DIR = _BUNDLE_DIR
 
