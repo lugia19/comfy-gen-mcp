@@ -39,7 +39,7 @@
     },
     "12": {
       "inputs": {
-        "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, mask, black face, scaled face",
+        "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia, mask, black face, scaled face, watermark, signature",
         "clip": ["45", 0]
       },
       "class_type": "CLIPTextEncode",
