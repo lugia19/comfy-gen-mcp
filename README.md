@@ -99,6 +99,6 @@ Under the hood these are stored in `~/.comfy-gen-mcp/local_config.json`, which i
 
 - **Nothing shows up after a couple minutes:** restart Claude Desktop. (First-run ComfyUI install + model downloads can take a while; check progress via **Settings > Open Logs Folder**.)
 - **Something fails after a custom node install:** restart Claude Desktop, ComfyUI, or your computer. ComfyUI sometimes leaves ghost processes behind.
-- **Slow generation / timeouts:** if a generation takes longer than ~55 seconds, the tool returns a request token and Claude automatically retries to fetch the result. On slower hardware (especially macOS with MPS), this is normal.
+- **Slow generation / timeouts:** if a generation takes longer than ~4 minutes (~90 seconds when reached through Cloudflare, i.e. the built-in tunnel or a proxied domain, since Cloudflare cuts off responses at 125 s), the tool returns a request token and Claude automatically retries to fetch the result. On slower hardware (especially macOS with MPS), this is normal.
 - **Diagnostics:** use **Settings > Open Logs Folder** — everything (server + ComfyUI) is consolidated there.
 - **macOS "damaged app" error:** run `xattr -cr "/Applications/Comfy-Gen-MCP.app"` in Terminal.

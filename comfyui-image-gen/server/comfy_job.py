@@ -17,7 +17,31 @@ from server.workflow import build_prompt
 
 log = logging.getLogger("comfy-mcp")
 
-RESPONSE_TIMEOUT = 55  # seconds — must be under Claude's connector/tool timeout
+# Seconds to wait for a job before handing back a request token instead of the image.
+# Direct path (stdio shim, local connector, a DNS-only domain): bounded by the shim's 300 s
+# MCP read timeout.
+RESPONSE_TIMEOUT = 240
+# Cloudflare-proxied path (the quick tunnel, or any orange-clouded domain): Cloudflare answers
+# 524 if the origin takes more than 125 s, and only Enterprise plans can raise that, so hand
+# the token back well before it.
+RESPONSE_TIMEOUT_CLOUDFLARE = 90
+
+
+def response_timeout() -> int:
+    """Wait budget for the current MCP request.
+
+    Cloudflare stamps every request it proxies with CF-Ray; localhost, the shim and a
+    grey-clouded domain never carry it. That is exactly the set of callers subject to the
+    524 cap, so the header alone decides. Outside a request (stdio, tests) -> direct budget.
+    """
+    try:
+        from mcp.server.lowlevel.server import request_ctx
+        headers = getattr(request_ctx.get().request, "headers", None)
+    except LookupError:
+        return RESPONSE_TIMEOUT
+    if headers is not None and "cf-ray" in headers:
+        return RESPONSE_TIMEOUT_CLOUDFLARE
+    return RESPONSE_TIMEOUT
 
 
 class ComfyJob:
@@ -274,11 +298,13 @@ class ComfyJob:
 
 
 async def wait_for_job(job: ComfyJob, output_dir: str | None = None) -> 'CallToolResult':
-    """Poll a job for up to RESPONSE_TIMEOUT seconds. Return image or token for retry."""
+    """Poll a job for up to response_timeout() seconds. Return image or token for retry."""
     from mcp.types import CallToolResult, ImageContent, TextContent
 
+    timeout = response_timeout()
+    log.info("Job %s: waiting up to %ds for a result", job.token, timeout)
     start = time.time()
-    while time.time() - start < RESPONSE_TIMEOUT:
+    while time.time() - start < timeout:
         if job.status == "done":
             b64, mime = ComfyJob.process_image(job.result, lossless=job.lossless)
             content = [ImageContent(type="image", data=b64, mimeType=mime)]
