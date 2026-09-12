@@ -640,14 +640,16 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         layout.addWidget(artist_entry)
 
     # ── Anima LoRAs (list editor) ──
-    lora_rows: list[tuple[QComboBox, QDoubleSpinBox, QLineEdit, QWidget]] = []
+    lora_rows: list[tuple[QComboBox, QDoubleSpinBox, QLineEdit, QCheckBox, QWidget]] = []
     if anima_pack:
         layout.addWidget(_make_hline())
         layout.addWidget(QLabel("<b>Anima LoRAs</b>"))
         d = QLabel("Drop .safetensors into the loras folder, then add them here. A LoRA only "
                    "applies when its trigger word is in the prompt — clear the trigger to "
                    "always apply it. Be sure to set the trigger word to the same one used to "
-                   "train the LoRA (if applicable).\n\nIf the LoRA adds a new artist or style, "
+                   "train the LoRA (if applicable). Check Hidden to keep a trigger word out of "
+                   "Claude's tool description — the LoRA still applies whenever the trigger "
+                   "appears in the prompt.\n\nIf the LoRA adds a new artist or style, "
                    "also add its tag to the Anima Artist Styles list above so the model knows "
                    "to use it.")
         d.setWordWrap(True)
@@ -675,7 +677,7 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         layout.addWidget(lora_container)
 
         def add_lora_row(name: str = "", strength: float = 1.0, trigger: str = "",
-                         suggest_trigger: bool = False):
+                         hidden: bool = False, suggest_trigger: bool = False):
             row = QWidget()
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
@@ -700,13 +702,18 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
             trigger_edit = QLineEdit(trigger)
             trigger_edit.setPlaceholderText("trigger word (optional)")
             trigger_edit.setMinimumWidth(160)
+            hidden_box = QCheckBox("Hidden")
+            hidden_box.setChecked(bool(hidden))
+            hidden_box.setToolTip("Don't tell Claude about this trigger word. The LoRA still "
+                                  "applies when the trigger appears in the prompt.")
             remove = QPushButton("Remove")
             remove.setFixedWidth(80)
-            entry = (combo, spin, trigger_edit, row)
+            entry = (combo, spin, trigger_edit, hidden_box, row)
             remove.clicked.connect(lambda: (lora_rows.remove(entry), row.setParent(None)))
             rl.addWidget(combo, 3)
             rl.addWidget(spin, 0)
             rl.addWidget(trigger_edit, 2)
+            rl.addWidget(hidden_box, 0)
             rl.addWidget(remove, 0)
             lora_layout.addWidget(row)
             lora_rows.append(entry)
@@ -726,7 +733,8 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
         for e in cfg.get("pack_loras", {}).get(anima_key, []):
             if isinstance(e, str):
                 e = {"name": e}
-            add_lora_row(e.get("name", ""), e.get("strength", 1.0), e.get("trigger", ""))
+            add_lora_row(e.get("name", ""), e.get("strength", 1.0), e.get("trigger", ""),
+                         e.get("hidden", False))
 
         lora_btn_row = QHBoxLayout()
         add_btn = QPushButton("Add LoRA")
@@ -770,13 +778,15 @@ def _build_settings_form(layout: QVBoxLayout, packs: list[dict],
                 c.setdefault("pack_settings", {}).setdefault(anima_key, {})["artist_list"] = val
         if anima_pack:
             loras = []
-            for combo, spin, trigger_edit, _row in lora_rows:
+            for combo, spin, trigger_edit, hidden_box, _row in lora_rows:
                 name = combo.currentText().strip()
                 if name:
                     entry = {"name": name, "strength": round(float(spin.value()), 3)}
                     trigger = trigger_edit.text().strip()
                     if trigger:
                         entry["trigger"] = trigger
+                    if hidden_box.isChecked():
+                        entry["hidden"] = True
                     loras.append(entry)
             c.setdefault("pack_loras", {})[anima_key] = loras
         save_local_config(c)

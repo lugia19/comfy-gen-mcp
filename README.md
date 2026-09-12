@@ -87,7 +87,7 @@ Everything is managed in the **Settings panel** — click **Settings** in the Co
 Settings include:
 - **Model selection** — which pack backs each tool: `generate_realistic_image` (Flux 2 Klein 4B vs 9B vs Z-Image Turbo), `generate_illustrated_image` (Anima vs Anima Turbo), and `edit_image` (Flux 2 Klein 4B vs 9B)
 - **Anima artist styles** — @artist tags blended into Anima prompts (browse them at the [Anima Style Explorer](https://thetacursed.github.io/Anima-Style-Explorer/index.html)); shared by both Anima and Anima Turbo
-- **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Anima-family only for now; shared by both Anima and Anima Turbo.
+- **Anima LoRAs** — add LoRAs with a strength and an optional *trigger word* (the LoRA only applies when that word appears in the prompt; leave it blank to always apply). Tick *Hidden* to keep a trigger word out of Claude's tool description — it still applies when you use the trigger yourself. Anima-family only for now; shared by both Anima and Anima Turbo.
 - **ComfyUI URL** — default `http://127.0.0.1:8188`. If that port is taken, the managed ComfyUI automatically falls back to a free port. Only change this if you want to point at your *own* already-running ComfyUI instead of the managed one.
 - **Custom workflow** — path to a ComfyUI workflow exported in **API format** (.json). Setting it adds the `generate_custom_image` tool.
 - **Custom workflow prompt node** — title of the node that receives the prompt text (auto-detected from the first KSampler's positive input if left blank).

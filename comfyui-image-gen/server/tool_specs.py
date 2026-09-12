@@ -141,7 +141,9 @@ def resolve_tool_description(pack: dict, groups: dict[str, list[dict]], env_read
         loras = load_local_config().get("pack_loras", {}).get(config_key, [])
         triggers: list[str] = []
         for e in loras:
-            trig = (e.get("trigger") or "").strip() if isinstance(e, dict) else ""
+            if not isinstance(e, dict) or e.get("hidden"):
+                continue  # hidden LoRAs still gate on their trigger but aren't advertised
+            trig = (e.get("trigger") or "").strip()
             if trig and trig not in triggers:  # dedupe, preserve order; skip always-on LoRAs
                 triggers.append(trig)
         if triggers:

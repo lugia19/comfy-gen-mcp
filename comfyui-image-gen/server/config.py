@@ -46,7 +46,9 @@ def ensure_logs_dir() -> str:
 
 # Per-pack config containers seeded into local_config.json (not rendered as scalar form
 # fields; the Settings panel builds these from the loaded packs):
-#   pack_loras       {pack_name: [{"name": "myLora.safetensors", "strength": 0.8}]}  (anima only)
+#   pack_loras       {pack_name: [{"name": "myLora.safetensors", "strength": 0.8,
+#                                 "trigger": "myLora", "hidden": false}]}  (anima only;
+#                    trigger/hidden optional — hidden keeps the trigger out of the tool description)
 #   pack_selections  {tool_name: pack_name}  (which pack a multi-pack tool uses)
 #   pack_settings    {pack_name: {"artist_list": "...", "max_pixels": 2097152}}
 #                    max_pixels is a pixel count (same unit as the pack JSON) and only
