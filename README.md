@@ -66,7 +66,7 @@ When using the standalone server with a Cloudflare tunnel, a window will show yo
 
 ## Mobile / Remote Access
 
-The standalone server is what you want for remote access. However, the **Claude mobile app does not display tool-generated images**. Use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/nicekid1/Claude-Enhancement-Suite) installed.
+The standalone server is what you want for remote access. However, the **Claude mobile app does not display tool-generated images**. Use a browser instead — ideally Firefox (including Android) with [Claude QoL](https://github.com/lugia19/Claude-QoL) installed.
 
 ## Models & tools
 
