@@ -3,7 +3,7 @@
 Status: design agreed 2026-09-27, spikes not yet run. This document is the source of truth for the
 rewrite until the new repository exists; it moves there as `docs/design.md`.
 
-Product name: undecided (placeholder "comfy-gen" below).
+Product name: Comfy-Gen-MCP (unchanged). New repository: `lugia19/comfyui-gen-mcp`.
 
 ## 1. Goals
 
@@ -193,6 +193,11 @@ Tests run `core` under both CPython and Pyodide.
 The Deploy button points at the `bootstrap` folder. If the button copies the whole repository
 rather than the folder, `bootstrap` becomes a tiny second repository. It rarely changes because the
 build fetches the release.
+
+Existing installs update from `github.com/lugia19/comfy-dxt.git`, the repository's former name,
+which GitHub redirects to `comfy-gen-mcp`. So never create a new repository named `comfy-dxt` or
+`comfy-gen-mcp` under this account, and never delete the old one while installs exist. Archiving is
+safe: an archived repository still serves pulls.
 
 The current `comfy-gen-mcp` stays in maintenance for existing users until the agent ships, then gets
 a final "install the new version" commit and is archived. Its `main` is a live update channel, which
